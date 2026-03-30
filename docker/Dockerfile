@@ -1,7 +1,7 @@
 # ROS2 Humble Docker开发环境模板
 # 基于Ubuntu 22.04
 ARG ROS_DISTRO=humble
-FROM ros:${ROS_DISTRO}
+FROM ros:humble-ros-base
 
 # 构建参数：是否使用国内镜像源
 ARG USE_CN_MIRROR=true
@@ -15,14 +15,23 @@ RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
 
 # 配置镜像源（根据构建参数选择）
 RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
-        sed -i 's|http://archive.ubuntu.com/ubuntu|https://mirrors.ustc.edu.cn/ubuntu|g' /etc/apt/sources.list && \
-        sed -i 's|http://security.ubuntu.com/ubuntu|https://mirrors.ustc.edu.cn/ubuntu|g' /etc/apt/sources.list && \
-        sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.ustc.edu.cn/ubuntu-ports|g' /etc/apt/sources.list; \
+    sed -i 's|http://archive.ubuntu.com/ubuntu|https://mirrors.ustc.edu.cn/ubuntu|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu|https://mirrors.ustc.edu.cn/ubuntu|g' /etc/apt/sources.list && \
+    sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.ustc.edu.cn/ubuntu-ports|g' /etc/apt/sources.list; \
     fi
 
+# 更新包列表并安装 ca-certificates
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# 更新 ROS2 仓库 GPG 密钥（解决密钥过期问题）
+# 先删除过期的密钥，再添加新密钥
+RUN apt-get update --allow-insecure-repositories && apt-get install -y curl gnupg2 ca-certificates && \
+    rm -f /usr/share/keyrings/ros-archive-keyring.gpg && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    rm -rf /var/lib/apt/lists/*
+
 # 合并所有 apt 安装步骤，减少层数并优化缓存
-RUN apt-get update && apt-get install -y \
-    # 基础开发工具
+RUN apt-get update --allow-insecure-repositories && apt-get install -y \
     vim \
     wget \
     htop \
@@ -37,22 +46,12 @@ RUN apt-get update && apt-get install -y \
     python3-vcstool \
     bash-completion \
     curl \
-    # ROS2 核心开发工具
-    ros-${ROS_DISTRO}-desktop \
     ros-${ROS_DISTRO}-rviz2 \
-    ros-${ROS_DISTRO}-gazebo-ros-pkgs \
-    ros-${ROS_DISTRO}-xacro \
-    ros-${ROS_DISTRO}-joint-state-publisher-gui \
-    ros-${ROS_DISTRO}-robot-state-publisher \
     ros-${ROS_DISTRO}-tf2-tools \
     ros-${ROS_DISTRO}-tf2-sensor-msgs \
     ros-${ROS_DISTRO}-tf2-geometry-msgs \
     ros-${ROS_DISTRO}-navigation2 \
     ros-${ROS_DISTRO}-nav2-bringup \
-    # 额外的 ROS2 工具
-    ros-${ROS_DISTRO}-demo-nodes-cpp \
-    ros-${ROS_DISTRO}-demo-nodes-py \
-    ros-${ROS_DISTRO}-launch-testing \
     ros-${ROS_DISTRO}-launch-xml \
     ros-${ROS_DISTRO}-launch-yaml \
     && rm -rf /var/lib/apt/lists/*

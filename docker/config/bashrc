@@ -1,4 +1,4 @@
-# ROS1 Docker Container Configuration
+# ROS2 Docker Container Configuration
 # This file is auto-loaded when entering the container
 
 # ============================================
@@ -39,30 +39,42 @@ fi
 export GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01:quote=01'
 
 # ============================================
-# ROS1 Environment Setup
+# ROS2 Environment Setup
 # ============================================
-echo "Loading ROS1 Noetic environment..."
+echo "Loading ROS2 environment..."
 
-# Source ROS setup
-if [ -f /opt/ros/noetic/setup.bash ]; then
-    source /opt/ros/noetic/setup.bash
-    echo "✓ ROS1 Noetic base environment loaded"
+# Workspace path (matched with docker-run.sh)
+export CONTAINER_WORKSPACE=${CONTAINER_WORKSPACE:-workspace}
+export WORKSPACE_PATH=~/$CONTAINER_WORKSPACE
+
+# Source ROS2 setup
+if [ -f /opt/ros/humble/setup.bash ]; then
+    source /opt/ros/humble/setup.bash
+    echo "✓ ROS2 Humble environment loaded"
+    export ROS_DISTRO=humble
+elif [ -f /opt/ros/foxy/setup.bash ]; then
+    source /opt/ros/foxy/setup.bash
+    echo "✓ ROS2 Foxy environment loaded"
+    export ROS_DISTRO=foxy
+elif [ -f /opt/ros/jazzy/setup.bash ]; then
+    source /opt/ros/jazzy/setup.bash
+    echo "✓ ROS2 Jazzy environment loaded"
+    export ROS_DISTRO=jazzy
+else
+    echo "⚠ ROS2 environment not found"
 fi
 
 # Source workspace setup if exists
-if [ -f ~/catkin_ws/devel/setup.bash ]; then
-    source ~/catkin_ws/devel/setup.bash
-    echo "✓ Catkin workspace environment loaded"
+if [ -f ~/workspace/install/setup.bash ]; then
+    source ~/workspace/install/setup.bash
+    echo "✓ ROS2 workspace environment loaded"
 else
-    echo "ℹ Catkin workspace not built yet. Run 'catkin_make' to build."
+    echo "ℹ ROS2 workspace not built yet. Run 'colcon build' to build."
 fi
 
-# ROS Network Configuration
+# ROS2 Network Configuration
 export ROS_HOSTNAME=localhost
-export ROS_MASTER_URI=http://localhost:11311
-
-# ROS1 Python path
-export PYTHONPATH="/opt/ros/noetic/lib/python3/dist-packages:$PYTHONPATH"
+export ROS_DOMAIN_ID=0
 
 # ============================================
 # Useful Aliases
@@ -74,62 +86,61 @@ alias l='ls -CF'
 alias ..='cd ..'
 alias ...='cd ../..'
 
-# ROS1 workspace aliases
-alias cw='cd ~/catkin_ws'
-alias cs='cd ~/catkin_ws/src'
-alias cm='cd ~/catkin_ws && catkin_make'
-alias cb='cd ~/catkin_ws && catkin build'
-alias cclean='cd ~/catkin_ws && rm -rf build devel'
+# ROS2 workspace aliases
+alias rw='cd ~/workspace'
+alias rs='cd ~/workspace/src'
+alias rb='cd ~/workspace && colcon build'
+alias rbi='cd ~/workspace && colcon build --symlink-install'
+alias rcb='cd ~/workspace && rm -rf build install log'
+alias rtest='cd ~/workspace && colcon test'
 
-# ROS1 command aliases
-alias rt='rostopic'
-alias rn='rosnode'
-alias rp='rosparam'
-alias rs='rosservice'
-alias rmsg='rosmsg'
-alias rsrv='rossrv'
+# ROS2 command aliases
+alias rt='ros2 topic'
+alias rn='ros2 node'
+alias rp='ros2 param'
+alias rsrv='ros2 service'
+alias rmsg='ros2 msg'
+alias rint='ros2 interface'
+alias rrun='ros2 run'
+alias rlaunch='ros2 launch'
+alias rpkg='ros2 pkg'
 
-# ROS1 launch aliases
-alias rl='roslaunch'
-alias rr='rosrun'
-alias rk='rospack'
+# ROS2 utility aliases
+alias rtlist='ros2 topic list'
+alias rtecho='ros2 topic echo'
+alias rtinfo='ros2 topic info'
+alias rnlist='ros2 node list'
+alias rninfo='ros2 node info'
+alias rplist='ros2 param list'
+alias rpget='ros2 param get'
 
 # Development aliases
-alias soc='source ~/catkin_ws/devel/setup.bash'
-alias remake='cd ~/catkin_ws && catkin_make clean && catkin_make'
+alias sorc='source ~/workspace/install/setup.bash'
+alias remake='cd ~/workspace && rm -rf build install && colcon build'
 
 # ============================================
 # Useful Functions
 # ============================================
 
-# Quick ROS1 package creation
-create_ros1_pkg() {
+# Quick ROS2 package creation
+create_ros2_pkg() {
     if [ -z "$1" ]; then
-        echo "Usage: create_ros1_pkg <package_name> [dependencies...]"
+        echo "Usage: create_ros2_pkg <package_name> [dependencies...]"
         return 1
     fi
-    cd ~/catkin_ws/src
-    catkin_create_pkg "$@"
-    cd ~/catkin_ws
-    catkin_make
+    cd ~/workspace/src
+    ros2 pkg create --build-type ament_cmake "$@"
+    cd ~/workspace
+    colcon build
 }
 
-# Find ROS1 package
-find_ros1_pkg() {
+# Find ROS2 package
+find_ros2_pkg() {
     if [ -z "$1" ]; then
-        echo "Usage: find_ros1_pkg <package_name>"
+        echo "Usage: find_ros2_pkg <package_name>"
         return 1
     fi
-    rospack find "$1"
-}
-
-# List all nodes in a package
-list_nodes() {
-    if [ -z "$1" ]; then
-        echo "Usage: list_nodes <package_name>"
-        return 1
-    fi
-    rospack list-names | grep "$1"
+    ros2 pkg prefix "$1"
 }
 
 # Quick topic echo
@@ -138,21 +149,12 @@ topic_echo() {
         echo "Usage: topic_echo <topic_name>"
         return 1
     fi
-    rostopic echo "$1"
+    ros2 topic echo "$1"
 }
 
-# Quick roslaunch
-launch_ros1() {
-    if [ -z "$1" ]; then
-        echo "Usage: launch_ros1 <package_name> [launch_file]"
-        return 1
-    fi
-    
-    if [ -n "$2" ]; then
-        roslaunch "$1" "$2".launch
-    else
-        roslaunch "$1"
-    fi
+# List all nodes
+list_nodes() {
+    ros2 node list
 }
 
 # ============================================
@@ -160,7 +162,7 @@ launch_ros1() {
 # ============================================
 # Show ROS_DISTRO in prompt
 if [ -n "$ROS_DISTRO" ]; then
-    PS1='\[\033[01;32m\](ROS1:$ROS_DISTRO)\[\033[00m\] \[\033[01;34m\]\u@\h\[\033[00m\]:\[\033[01;36m\]\w\[\033[00m\]\$ '
+    PS1='\[\033[01;32m\](ROS2:$ROS_DISTRO)\[\033[00m\] \[\033[01;34m\]\u@\h\[\033[00m\]:\[\033[01;36m\]\w\[\033[00m\]\$ '
 else
     PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
 fi
@@ -170,23 +172,22 @@ fi
 # ============================================
 echo ""
 echo "=========================================="
-echo "  ROS1 Docker Development Container"
+echo "  ROS2 Docker Development Container"
 echo "=========================================="
 echo "  ROS Version: $ROS_DISTRO"
-echo "  Workspace:   ~/catkin_ws"
+echo "  Workspace:   ~/workspace"
 echo "  User:        $(whoami)"
 echo "=========================================="
 echo ""
 echo "Quick Commands:"
-echo "  cw, cs       - Navigate to workspace/src"
-echo "  cm, cb      - Build workspace (make/build)"
-echo "  soc          - Source workspace setup"
+echo "  rw, rs       - Navigate to workspace/src"
+echo "  rb, rbi      - Build workspace (normal/symlink)"
+echo "  sorc         - Source workspace setup"
 echo "  remake       - Clean and rebuild"
 echo ""
-echo "ROS1 Commands:"
+echo "ROS2 Commands:"
 echo "  rt, rn, rp   - topic, node, param utilities"
-echo "  rl, rr       - launch and run commands"
-echo "  rmsg, rsrv   - message and service utilities"
+echo "  rrun, rlaunch - run and launch commands"
 echo ""
 echo "Type 'alias' to see all available shortcuts"
 echo "=========================================="
