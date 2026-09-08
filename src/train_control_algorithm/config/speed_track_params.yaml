@@ -1,0 +1,31 @@
+# ============================================================================
+# speed_track_node 参数默认值 (v2.0)
+#
+# 通过 launch 文件加载后，YAML 中的值会覆盖代码中的 declare_parameter default。
+# 运维时只需修改此文件或在 launch 中指定，无需重新编译。
+# ============================================================================
+
+speed_track_node:
+  ros__parameters:
+
+    # ── 位置环 PID ──
+    k_p_pos: 0.3
+    k_i_pos: 0.04
+    k_d_pos: 0.05
+
+    # ── 限幅（默认值，可被 SpeedCommand 动态覆盖）──
+    max_accel: 1.5
+    max_decel: -2.0
+    max_speed: 5.0
+
+    # ── 业务参数 ──
+    link_task_dec_value: -0.2
+    stop_task_dec_value: -0.3
+    steady_speed_forward: 0.5
+    steady_speed_backward: -0.5
+    brake_value: 50
+
+    # ── 跟车稳定性判定 ──
+    stable_pos_threshold: 0.1
+    stable_vel_threshold: 0.1
+    stable_duration: 3.0

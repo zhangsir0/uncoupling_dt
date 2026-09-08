@@ -1,0 +1,35 @@
+<launch>
+  <!-- fix 节点 -->
+    <arg name="node_name"   default="fixposition_driver_ros2" description="Node name"/> <!--  -->
+    <arg name="config"      default="config.yaml"             description="Configuration file to use"/>
+    <arg name="launcher"    default=""                        description="Launch node via this (node launch-prefix)"/>
+    <node name="$(var node_name)" pkg="fixposition_driver_ros2" exec="fixposition_driver_ros2_exec"
+        output="screen" respawn="true" respawn_delay="5" launch-prefix="$(var launcher)"
+        ros_args="--log-level $(var node_name):=info">
+        <param from="$(find-pkg-share fixposition_driver_ros2)/launch/$(var config)"/>
+        <param name="some_numeric_param" value="100.2"/>
+    </node>
+
+
+  <!-- 包含 magnetic_guide_driver.launch.py -->
+  <include file="$(find-pkg-share magnetic_guide_driver)/launch/magnetic_guide_driver.launch.py"/>
+
+  <!-- 包含 can_driver_node_socket.launch.xml -->
+  <include file="$(find-pkg-share can_driver)/launch/can_driver_node_socket.launch.xml"/>
+
+  <!-- <node pkg="magnetic_guide_py_controller" exec="magnetic_guide_pid_node" name="magnetic_guide_pid_node" output="log"/> -->
+  <!-- yhs底盘驱动 -->
+  <include file="$(find-pkg-share yhs_can_control)/launch/yhs_can_control.launch.py"/>
+
+  <node pkg="magnetic_guide_py_controller" exec="magnetic_guide_pid_node" name="magnetic_guide_pid_node" output="log"/>
+
+  <include file="$(find-pkg-share chassis_arbitration)/launch/chassis_arbitration.launch.py"/>
+
+  <!-- modbus通讯 -->
+  <include file="$(find-pkg-share chassis_comm)/launch/chassis_comm.launch.py"/>
+
+  <!-- rviz2 -->
+  <!-- <node pkg="rviz2" exec="rviz2" name="rviz2" args="-d $(find-pkg-share magnetic_guide_controller)/rviz/rviz2.rviz" /> -->
+  <!-- <include file="$(find-pkg-share wd_robot_server)/launch/wd_robot_server.launch.py"/> -->
+
+</launch>

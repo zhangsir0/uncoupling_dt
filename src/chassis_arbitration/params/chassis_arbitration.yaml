@@ -1,0 +1,25 @@
+chassis_arbitration_node:
+  ros__parameters:
+    # ===== 超时参数 (ms) =====
+    timeout_ctrl_speed_ms: 200
+    timeout_ctrl_position_ms: 200
+    timeout_speed_command_ms: 500
+    timeout_ctrl_hmi_ms: 500
+    timeout_ctrl_fence_ms: 300
+    timeout_ctrl_mag_steer_ms: 300
+    timeout_ctrl_mag_stop_ms: 300
+
+    # ===== 安全参数 =====
+    magnetic_guide_enabled: true       # 是否启用磁导航（未铺设磁导线时设为 false，跳过脱轨检测和转向覆盖）
+    enable_fence: false                 # 是否启用 /ctrl_fence 电子围栏
+    fence_decelerate_velocity: 0.3      # 围栏减速限速 (m/s)
+    max_velocity: 2.0                   # 全局最大速度 (m/s)
+    max_steering_angle: 30.0            # 最大转向角绝对值 (度)
+    recovery_brake_step: 5              # ESTOP恢复每周期刹车减量
+
+    # ===== 频率 =====
+    arbitration_rate: 50.0              # 主循环 (Hz)
+    state_publish_rate: 10.0            # 状态发布 (Hz)
+
+    # ===== L4 源选择 =====
+    l4_position_nav_threshold: 20       # ctrl_mode >= 此值使用 /ctrl_position

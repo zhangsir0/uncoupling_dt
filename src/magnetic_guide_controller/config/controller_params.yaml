@@ -1,0 +1,27 @@
+magnetic_guide_controller_node:
+  ros__parameters:
+    # PID参数 (由于引入了差分归一化，范围为[-1, 1]，此三项系数需重新分配量级)
+    kp: 0.2
+    ki: 0.00
+    kd: 0.00
+    
+    # 磁导航状态判定参数
+    safe_sum_threshold: 150.0 # 判定磁信号有效的阈值，低于此值视为脱轨
+    diff_normalize_range: 500.0 # 差分电压归一化范围基准，例如 ±20mV 代表全偏
+    
+    # 阿克曼车辆控制参数
+    max_steering_angle: 0.4712 # 27度最大转角 (27 * 3.14159 / 180 = 0.4712 弧度)
+    reverse_forward_steering: true # 解决前进打角反向的问题
+    max_speed_forward: 1.0    # 直道最大速度 (m/s)
+    min_speed_forward: 0.3    # 弯道最小速度 (m/s)
+    max_speed_reverse: 0.5    # 倒车直道最大速度 (m/s)
+    min_speed_reverse: 0.15   # 倒车弯道最小速度 (m/s)
+    
+    force_gear: 0             # 0:基于底层底盘反馈决定方向, 4:强行设定为D档(只用前传感器), 2:强行设定为R档(只用后传感器)
+    
+    # 发布与订阅话题配置
+    front_magnetic_topic: "/magnetic_guide_data_1"
+    rear_magnetic_topic: "/magnetic_guide_data_2"
+    chassis_fb_topic: "/chassis_info_fb"
+    cmd_vel_topic: "/cmd_vel"   # 发布 Twist 类型的控制指令
+    ackermann_topic: "/ackermann_cmd" # 发布 AckermannDrive 类型的控制指令

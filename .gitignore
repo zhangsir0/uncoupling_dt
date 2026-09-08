@@ -3,5 +3,10 @@ install
 devel
 build
 logs
-src
+log
+data
+output
 .git
+
+__pycache__/
+*.pyc

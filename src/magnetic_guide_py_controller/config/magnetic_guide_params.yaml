@@ -1,0 +1,49 @@
+magnetic_guide_py_controller_node:
+  ros__parameters:
+    topics:
+      front_magnetic: "/magnetic_guide_data_1"
+      rear_magnetic: "/magnetic_guide_data_2"
+      chassis_fb: "/chassis_info_fb"
+      ackermann_cmd: "/ackermann_cmd"
+    sensor:
+      safe_sum_threshold_front: 800.0  # 前部传感器有效合值阈值
+      safe_sum_threshold_rear: 800.0   # 后部传感器有效合值阈值
+      magnetic_diff_max_front: 500.0   # 前部传感器最大偏差对应的数值
+      magnetic_diff_max_rear: 500.0    # 后部传感器最大偏差对应的数值
+      magnetic_width: 0.1565           # 磁传感器检测宽度 (m)
+      L_sensor: 1.59                   # 前后磁传感器总间距
+      deviation_threshold_m: 0.07      # 轨迹偏离超过该值时，认为车辆偏离轨迹
+      front_sensor_sign: -1.0           # 前传感器方向极性(若反向改为-1.0)
+      rear_sensor_sign: 1.0           # 后传感器方向极性(针对"前后平行时数据相反"修正，设为-1.0)
+    control:
+      max_steer_angle: 0.4712          # 物理最大转角限制 (27度)
+      kp_base: 0.5                     # 【已调小】极大地减小单次转向幅度
+      kp_speed_gain: 0.0               # 暂时关闭随速增益，求稳
+      ki_base: 0.02                    # 【已调小】减小积分过冲
+      ki_speed_decay: 0.0              # 暂时关闭随速衰减
+
+magnetic_guide_pid_controller_node:
+  ros__parameters:
+    topics:
+      front_magnetic: "/magnetic_guide_data_1"
+      rear_magnetic: "/magnetic_guide_data_2"
+      chassis_fb: "/chassis_info_fb"
+      ackermann_cmd: "/ackermann_cmd"
+    sensor:
+      safe_sum_threshold: 800.0        # 传感器有效合值阈值, 判断是否脱轨
+      diff_normalize_range: 500.0       # 偏差(diff)归一化系数 (根据实际数据调整)
+    control:
+      max_steer_angle: 0.4712          # 物理最大转角限制
+      forward:
+        kp_base: 0.1                   # 前进挡 P参数基础值
+        ki_base: 0.0                  # 前进挡 I参数基础值
+        kd_base: 0.0                   # 前进挡 D参数基础值
+        kp_speed_decay: 0.0          # 随速衰减系数 (车速越大Kp越小, 防高速画龙)
+        ki_speed_decay: 0.0
+      reverse:
+        kp_base: 0.20                   # 退挡 P参数基础值 
+        ki_base: 0.0                  # 退挡 I参数基础值
+        kd_base: 0.0                   # 退挡 D参数基础值
+        kp_speed_decay: 0.0           # 倒车随速衰减系数
+        ki_speed_decay: 0.0
+
