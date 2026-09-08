@@ -1,0 +1,56 @@
+<launch>
+
+  <!-- fix 节点 -->
+    <arg name="node_name"   default="fixposition_driver_ros2" description="Node name"/> <!--  -->
+    <arg name="config"      default="config.yaml"             description="Configuration file to use"/>
+    <arg name="launcher"    default=""                        description="Launch node via this (node launch-prefix)"/>
+    <node name="$(var node_name)" pkg="fixposition_driver_ros2" exec="fixposition_driver_ros2_exec"
+        output="screen" respawn="true" respawn_delay="5" launch-prefix="$(var launcher)"
+        ros_args="--log-level $(var node_name):=info">
+        <param from="$(find-pkg-share fixposition_driver_ros2)/launch/$(var config)"/>
+        <param name="some_numeric_param" value="100.2"/>
+    </node>
+
+  <!-- Hesai 雷达节点 -->
+  <node pkg="hesai_ros_driver" exec="hesai_ros_driver_node" name="hesai_ros_driver_node" output="log"/>
+
+    <!-- 第一个E1R雷达 -->
+  <node pkg="rslidar_sdk" exec="rslidar_sdk_node" name="rslidar_sdk_node_1" output="screen">
+    <param name="config_path" value="$(find-pkg-share rslidar_sdk)/config/config_1.yaml"/>
+  </node>
+
+  <!-- 第二个E1R雷达 -->
+  <node pkg="rslidar_sdk" exec="rslidar_sdk_node" name="rslidar_sdk_node_2" output="screen">
+    <param name="config_path" value="$(find-pkg-share rslidar_sdk)/config/config_2.yaml"/>
+  </node> 
+
+  <!-- Lidar TF Publisher 节点 -->
+  <node pkg="magnetic_guide_controller" exec="lidar_tf_publisher_node" name="lidar_tf_publisher_node" output="screen">
+     <param name="config_path" value="$(find-pkg-share magnetic_guide_controller)/config/lidar_tf.yaml"/>
+  </node> 
+  <!-- <node pkg="lidar_fusion" exec="frame_lidar_fusion" name="frame_lidar_fusion" output="log"/> -->
+  <!-- <node pkg="target_recognition_node" exec="target_recognition_node_exe" name="target_recognition_node_exe" output="log"/> -->
+
+  <!-- chassis control -->
+  <!-- <node pkg="magnetic_guide_controller" exec="yhs_velocity_controller.py" name="yhs_velocity_controller" output="log"/> -->
+  <!-- <node pkg="magnetic_guide_controller" exec="lidar_fusion_node.py" name="lidar_fusion_node" output="screen"/> -->
+
+  <!-- <include file="$(find-pkg-share magnetic_guide_controller)/launch/magnetic_guide.launch.py"/> -->
+
+  <!-- 包含 magnetic_guide_driver.launch.py -->
+  <include file="$(find-pkg-share magnetic_guide_driver)/launch/magnetic_guide_driver.launch.py"/>
+
+  <!-- 包含 can_driver_node_socket.launch.xml -->
+  <include file="$(find-pkg-share can_driver)/launch/can_driver_node_socket.launch.xml"/>
+
+  <!-- yhs底盘驱动 -->
+  <include file="$(find-pkg-share yhs_can_control)/launch/yhs_can_control.launch.py"/>
+
+  <!-- modbus通讯 -->
+  <include file="$(find-pkg-share chassis_comm)/launch/chassis_comm.launch.py"/>
+
+  <!-- rviz2 -->
+  <!-- <node pkg="rviz2" exec="rviz2" name="rviz2" args="-d $(find-pkg-share magnetic_guide_controller)/rviz/rviz2.rviz" /> -->
+  <include file="$(find-pkg-share wd_robot_server)/launch/wd_robot_server.launch.py"/>
+
+</launch>

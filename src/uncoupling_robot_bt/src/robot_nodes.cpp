@@ -2,7 +2,6 @@
 #include "data_interfaces/msg/hook_task_array.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <chrono>
-#include <cmath>
 
 namespace uncoupling_robot
 {
@@ -389,177 +388,53 @@ void NavigateToWaitArea::onHalted()
   setBBSpeedCmd(bb, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);  // P档+刹车
 }
 
-
 // ================================================================
-// S4: 间隙定位 — 检查目标车厢 (ID 判断 + 距离阈值判断)
-//   detect_id == train_id 且 |detect_distance| <= threshold → SUCCESS
-//   detect_id == train_id 且 |detect_distance| >  threshold → FAILURE
-//   threshold < 0 时不作位置判断 (仅 ID 判断)
-//   detect_id == 255 (无效值/无检测) → RUNNING
+// S4: 间隙定位
 // ================================================================
-CheckTargetCarriage::CheckTargetCarriage(const std::string& name, const BT::NodeConfig& config)
+WaitForTargetGap::WaitForTargetGap(const std::string& name, const BT::NodeConfig& config)
   : BT::StatefulActionNode(name, config) {}
 
-BT::NodeStatus CheckTargetCarriage::onStart()
+BT::NodeStatus WaitForTargetGap::onStart()
 {
   MOCK_CHECK_NODE();
-  if (auto t = getInput<double>("distance_threshold")) threshold_ = t.value();
   RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
-    "检查目标车厢 (distance_threshold=%.2f, <0 则不判断位置)...", threshold_);
+    "等待目标车厢 ...");
+
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus CheckTargetCarriage::onRunning()
+BT::NodeStatus WaitForTargetGap::onRunning()
 {
   MOCK_CHECK_NODE();
   auto bb = config().blackboard;
-
   int task_round = bbReadInt(bb, "task_round");
-  if (task_round < 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("bt_cips"), "task_round 未初始化: %d", task_round);
-    return BT::NodeStatus::FAILURE;
+  if (task_round < 0) { 
+    RCLCPP_ERROR(rclcpp::get_logger("bt_cips"), "task_round 未初始化: %d", task_round); 
+    return BT::NodeStatus::FAILURE; 
   }
-
   int detect_id = bbReadInt(bb, "detect_id", -1);
-  if (detect_id < 0 || detect_id == 255) {
-    return BT::NodeStatus::RUNNING;   // 无效值/无检测, 等待
-  }
-
-  int train_id = bbReadInt(bb, "train_id");
-  double detect_distance = bbReadDouble(bb, "detect_distance", -1.0);
-
-  // ── ID 判断 ──
-  if (train_id > detect_id) {
-    RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "目标未到达! detect_id=%d train_id=%d", detect_id, train_id);
+  if ( detect_id < -1 ) {
+    // RCLCPP_INFO(rclcpp::get_logger("bt_cips"), "未检测到车厢, detect_id=%d", detect_id);
     return BT::NodeStatus::RUNNING;
+  }
+  int train_id = bbReadInt(bb, "train_id");
+  if (train_id > detect_id) {
+    RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "目标未到达! detect_id=%d target_gap_id=%d", detect_id, train_id);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (train_id == detect_id) {
+    RCLCPP_INFO(rclcpp::get_logger("bt_cips"), "已锁定目标车厢! detect_id=%d == target_gap_id=%d", detect_id, train_id);
+    return BT::NodeStatus::SUCCESS;
   }
   if (train_id < detect_id) {
     RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "错失目标! detect_id=%d train_id=%d", detect_id, train_id);
     return BT::NodeStatus::FAILURE;
   }
-
-  // ── detect_id == train_id → 位置判断 ──
-  // threshold < 0 → 不作位置判断, 仅 ID 匹配即成功
-  if (threshold_ < 0.0) {
-    RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
-      "已锁定目标车厢 detect_id=%d == train_id=%d (threshold<0, 不判断位置)", detect_id, train_id);
-    return BT::NodeStatus::SUCCESS;
-  }
-
-  double abs_distance = std::abs(detect_distance);
-  if (abs_distance <= threshold_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
-      "已锁定目标车厢且距离在阈值内! detect_id=%d == train_id=%d, |distance|=%.2f <= %.2f",
-      detect_id, train_id, abs_distance, threshold_);
-    return BT::NodeStatus::SUCCESS;
-  }
-  RCLCPP_WARN(rclcpp::get_logger("bt_gap"),
-    "距离超阈值! detect_id=%d == train_id=%d, |distance|=%.2f > %.2f",
-    detect_id, train_id, abs_distance, threshold_);
-  return BT::NodeStatus::FAILURE;
-}
-
-void CheckTargetCarriage::onHalted()
-{ RCLCPP_WARN(rclcpp::get_logger("bt_gap"), "被中断"); }
-
-// ================================================================
-// 检查目标位置 (以 coupling_count 索引位置表 + odometry_enu 当前位置比较)
-// ================================================================
-CheckTargetPosition::CheckTargetPosition(const std::string& name, const BT::NodeConfig& config)
-  : BT::StatefulActionNode(name, config) {}
-
-BT::NodeStatus CheckTargetPosition::onStart()
-{
-  MOCK_CHECK_NODE();
-  if (auto t = getInput<double>("tolerance")) tolerance_ = t.value();
-  if (auto t = getInput<double>("timeout")) timeout_ = t.value();
-  if (auto t = getInput<std::string>("position_type")) position_type_ = t.value();
-  start_time_ = rclcpp::Clock().now();
-  RCLCPP_INFO(rclcpp::get_logger("bt_pos"),
-    "检查目标位置: type=%s tolerance=%.2f timeout=%.1f",
-    position_type_.c_str(), tolerance_, timeout_);
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus CheckTargetPosition::onRunning()
-{
-  MOCK_CHECK_NODE();
-  auto bb = config().blackboard;
-
-  // 1. 读取 coupling_count (连挂数, 从 1 开始)
-  int cc = bbReadInt(bb, "coupling_count", -1);
-  if (cc < 1) {
-    RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "coupling_count 无效: %d", cc);
-    return BT::NodeStatus::FAILURE;
-  }
-
-  // 2. 读取位置表 (bt_executor 载入)
-  std::shared_ptr<std::vector<HookPosition>> positions;
-  {
-    auto a = bb->getAnyLocked("hook_positions");
-    if (!a) {
-      RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "hook_positions 未加载");
-      return BT::NodeStatus::FAILURE;
-    }
-    try { positions = a->cast<std::shared_ptr<std::vector<HookPosition>>>(); }
-    catch (...) {
-      RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "hook_positions 类型转换失败");
-      return BT::NodeStatus::FAILURE;
-    }
-  }
-  if (!positions) return BT::NodeStatus::FAILURE;
-
-  // 3. 按 coupling_count 查找
-  const HookPosition* hp = nullptr;
-  for (const auto& p : *positions) {
-    if (p.coupling_count == cc) { hp = &p; break; }
-  }
-  if (!hp) {
-    RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "coupling_count=%d 在位置表中不存在", cc);
-    return BT::NodeStatus::FAILURE;
-  }
-
-  // 4. 选择 uncouple / wait 目标
-  double tx, ty;
-  if (position_type_ == "wait") {
-    tx = hp->wait_x; ty = hp->wait_y;
-  } else {  // 默认 uncouple
-    tx = hp->uncouple_x; ty = hp->uncouple_y;
-  }
-
-  // 5. 当前位置就绪检查
-  if (!bbReadInt(bb, "odom_enu_ready", 0)) {
-    return BT::NodeStatus::RUNNING;   // 等待 odometry
-  }
-  double cx = bbReadDouble(bb, "odom_enu_x", 0.0);
-  double cy = bbReadDouble(bb, "odom_enu_y", 0.0);
-
-  // 6. 水平欧氏距离
-  double dx = cx - tx, dy = cy - ty;
-  double dist = std::sqrt(dx * dx + dy * dy);
-
-  if (dist <= tolerance_) {
-    RCLCPP_INFO(rclcpp::get_logger("bt_pos"),
-      "到达目标位置! type=%s cc=%d dist=%.3f <= tol=%.3f",
-      position_type_.c_str(), cc, dist, tolerance_);
-    return BT::NodeStatus::SUCCESS;
-  }
-
-  // 7. 超时判断
-  if (timeout_ > 0.0) {
-    double elapsed = (rclcpp::Clock().now() - start_time_).seconds();
-    if (elapsed > timeout_) {
-      RCLCPP_WARN(rclcpp::get_logger("bt_pos"),
-        "超时 %.1fs: cc=%d dist=%.3f > tol=%.3f", elapsed, cc, dist, tolerance_);
-      return BT::NodeStatus::FAILURE;
-    }
-  }
-
-  return BT::NodeStatus::RUNNING;
-}
-
-void CheckTargetPosition::onHalted()
-{ RCLCPP_WARN(rclcpp::get_logger("bt_pos"), "被中断"); }
+void WaitForTargetGap::onHalted()
+{ RCLCPP_WARN(rclcpp::get_logger("bt_waitgap"), "被中断"); }
 
 
 
@@ -1236,8 +1111,7 @@ void RegisterAllNodes(BT::BehaviorTreeFactory& factory, rclcpp::Node::SharedPtr)
   factory.registerNodeType<MagneticGuideOnline>("MagneticGuideOnline");
   factory.registerNodeType<NavigateToWaitArea>("NavigateToWaitArea");
   // S4
-  factory.registerNodeType<CheckTargetCarriage>("CheckTargetCarriage");
-  factory.registerNodeType<CheckTargetPosition>("CheckTargetPosition");
+  factory.registerNodeType<WaitForTargetGap>("WaitForTargetGap");
   factory.registerNodeType<ExtractTaskInfo>("ExtractTaskInfo");
   // S5
   factory.registerNodeType<GenerateInterceptTrajectory>("GenerateInterceptTrajectory");

@@ -221,56 +221,25 @@ private:
 // ║            S4: 占位等待 — 雷达间隙计数                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-// ── 检查目标车厢: ID 判断 (detect_id == train_id) + 距离阈值判断 ──
-// detect_id == train_id 且 |detect_distance| <= threshold → SUCCESS (进入阈值)
-// detect_id == train_id 且 |detect_distance| >  threshold → FAILURE (距离超阈值)
-// threshold < 0 时不作位置判断 (仅 ID 判断)
-// detect_id == 255 (无效值/无检测) → RUNNING
-class CheckTargetCarriage : public BT::StatefulActionNode
+// 等待目标车厢间隙 → 与 LockTargetGap 合并
+// 从 cips_task_array[task_round] 获取 train_id 作为 target_gap_id
+// detect_id == target_gap_id → SUCCESS, 否则 RUNNING
+// ★ ActionNodeBase: tick() 直接调用, 不用 onStart/onRunning (StatefulActionNode 生命周期失败)
+class WaitForTargetGap : public BT::StatefulActionNode
 {
 public:
-  CheckTargetCarriage(const std::string& n, const BT::NodeConfig& c);
+  WaitForTargetGap(const std::string& n, const BT::NodeConfig& c);
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
   static BT::PortsList providedPorts()
-  { return { BT::InputPort<double>("distance_threshold", 0.9, "目标距离阈值(m), detect_distance <= 阈值即锁定") }; }
+  { return { BT::InputPort<int>("timeout", 0, "超时ms") }; }
+  // static BT::PortsList providedPorts()
+  // { return {
+  //     BT::OutputPort<int>("gap_id", "{target_gap_id}", "锁定间隙ID(=train_id)")
+  // };}
 private:
-  double threshold_ = 0.9;
-};
 
-// ── 摘钩作业位置 (对应 config/hook_positions.csv 一行) ──
-// 由 bt_executor 启动时解析 CSV 载入黑板 (key: hook_positions)
-struct HookPosition
-{
-  int    coupling_count = 0;   // 连挂数 (从 1 开始)
-  double uncouple_x = 0.0;     // 摘钩位置 x (ENU)
-  double uncouple_y = 0.0;     // 摘钩位置 y (ENU)
-  double wait_x = 0.0;         // 等待位置 x (ENU)
-  double wait_y = 0.0;         // 等待位置 y (ENU)
-};
-
-// ── 检查目标位置: 以 coupling_count 索引位置表, 与 odometry_enu 当前位置比较 ──
-// position_type = "uncouple"(摘钩位置) / "wait"(等待位置)
-// 水平欧氏距离 dist <= tolerance → SUCCESS; 超时 → FAILURE; 否则 RUNNING
-class CheckTargetPosition : public BT::StatefulActionNode
-{
-public:
-  CheckTargetPosition(const std::string& n, const BT::NodeConfig& c);
-  BT::NodeStatus onStart() override;
-  BT::NodeStatus onRunning() override;
-  void onHalted() override;
-  static BT::PortsList providedPorts()
-  { return {
-      BT::InputPort<double>("tolerance", 0.05, "容差半径(m), 水平欧氏距离"),
-      BT::InputPort<double>("timeout", -1.0, "超时秒数, -1=无限"),
-      BT::InputPort<std::string>("position_type", "uncouple", "uncouple=摘钩位置 / wait=等待位置"),
-  };}
-private:
-  double tolerance_ = 0.05;
-  double timeout_ = -1.0;
-  std::string position_type_ = "uncouple";
-  rclcpp::Time start_time_;
 };
 
 // ── 任务信息提取: cips_task_array[task_round] → 黑板各变量 ──
