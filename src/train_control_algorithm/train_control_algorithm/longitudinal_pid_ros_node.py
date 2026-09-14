@@ -24,6 +24,8 @@
     4  - 停车：以 task4_dec_valude 平缓减速到 0
     10 - 前进巡航+定点：定速前进，收到 /detect_result → 切模式 1
     11 - 后运动+定点：定速后退，收到 /detect_result → 切模式 1
+    12 - 前往固定位置(wait 点)：按 /fixposition 到驼峰原点距离做位置 PID，
+         途中感知到目标车厢(current_id==target_id 连续3帧) → 切模式 1 追车
 
 speed_state 编码：
     1 - 开始跟车
@@ -33,6 +35,8 @@ speed_state 编码：
 参数默认值见 config/speed_track_params.yaml。
 """
 
+import math
+import os
 import time
 from collections import deque
 
@@ -41,6 +45,7 @@ from rclpy.node import Node
 from std_msgs.msg import UInt8
 from rcl_interfaces.msg import ParameterDescriptor, FloatingPointRange, SetParametersResult
 from yhs_can_interfaces.msg import ChassisInfoFb
+from nav_msgs.msg import Odometry
 
 from data_interfaces.msg import CtrlSpeed, DetectResult, SpeedCommand
 from .longitudinal_pid_controller import LongitudinalPIDController
@@ -85,6 +90,11 @@ PARAM_RULES = {
     "feedforward_window":   (_gt(0.0),   "feedforward_window must be > 0",  "local"),
     "feedforward_weight":   (None,       None,                           "local"),
     "_integral_pos_error_limit": (_gt(0.0), "integral_pos_limit must be > 0", "controller"),
+    # ── mode12 前往固定位置(wait 点) ──
+    "fix_arrival_threshold": (_gt(0.0),  "fix_arrival_threshold must be > 0", "local"),
+    "fix_arrival_duration":  (_gt(0.0),  "fix_arrival_duration must be > 0",  "local"),
+    "fix_origin_x":          (None,      None,                           "local"),
+    "fix_origin_y":          (None,      None,                           "local"),
 }
 
 
@@ -146,6 +156,17 @@ class SpeedTrackNode(Node):
         # ── 巡航定点逼近标记（模式10/11检测到目标后置True，逼近完成或切模式时清除）──
         self._cruise_approaching = False
 
+        # ── mode12 前往固定位置(wait 点) 运行时状态 ──
+        self._fix_xy = (0.0, 0.0)          # /fixposition 最新位置 (x, y)
+        self._fix_time = 0.0               # 最新定位时间戳 (收到即更新)
+        self.fix_dist = 0.0                # 目标 wait 点到驼峰原点的距离 (m)
+        self._fix_target_valid = False     # 是否成功从 yaml 取到 wait_distance
+        self._mode12_coupling = -1         # 上次解析 mode12 用的 coupling_count
+        self._mode12_chase_frames = 0      # 追车抢占连续确认帧数
+        self._fix_arrive_since = None      # 到达阈值内起始时间 (防抖)
+        self._task_points = {}             # {coupling_count: wait_distance}
+        self._detect_time = 0.0            # 最近一次 /detect_result 到达时间
+
         # ══════════════════════════════════════════════════════════
         # 5. 订阅者
         # ══════════════════════════════════════════════════════════
@@ -155,6 +176,12 @@ class SpeedTrackNode(Node):
             DetectResult, "/detect_result", self._target_result_callback, 10)
         self.ego_speed_sub = self.create_subscription(
             ChassisInfoFb, "/chassis_info_fb", self._chassis_info_callback, 10)
+        # mode12: fixposition 融合定位（ENU，原点=驼峰）
+        self.fix_odom_sub = self.create_subscription(
+            Odometry, "/fixposition/odometry_enu", self._fixposition_callback, 10)
+
+        # ── mode12: 加载 task_points.yaml（coupling_count → wait_distance）──
+        self._load_task_points(self.get_parameter("task_points_file").value)
 
         # ══════════════════════════════════════════════════════════
         # 6. 发布者
@@ -225,6 +252,14 @@ class SpeedTrackNode(Node):
                                             "当感知速度有延迟/不准确时建议关闭。"))
         self._decl("feedforward_window", default=3.0,  min=0.5,  max=10.0, step=0.5, desc="前馈速度滑动平均窗口 (s)")
         self._decl("feedforward_weight", default=0.8,  min=0.0,  max=1.0,  step=0.01, desc="前馈速度权重 (0=纯PID, 1=全前馈)")
+
+        # ── mode12 前往固定位置(wait 点) ──
+        self.declare_parameter("task_points_file", "",
+            ParameterDescriptor(description="task_points.yaml 路径（含 wait_distance 表），mode12 用"))
+        self._decl("fix_arrival_threshold", default=0.15, min=0.01, max=5.0, step=0.01, desc="mode12 到达距离阈值 (m)")
+        self._decl("fix_arrival_duration",  default=2.0,  min=0.1,  max=10.0, step=0.1, desc="mode12 到达稳定时长 (s)")
+        self._decl("fix_origin_x", default=0.0, min=-1e6, max=1e6, step=0.01, desc="驼峰原点在 fixposition ENU 中的 x 偏移 (m)")
+        self._decl("fix_origin_y", default=0.0, min=-1e6, max=1e6, step=0.01, desc="驼峰原点在 fixposition ENU 中的 y 偏移 (m)")
 
     def _read_local_params(self):
         """读取归属于 self 的业务参数到本地缓存。"""
@@ -298,6 +333,8 @@ class SpeedTrackNode(Node):
 
         提取 ctrl_mode 切换状态机模式，提取 max_* 字段作为动态限幅，
         提取 target_id 和 position 用于 ID 匹配和位置修正。
+        mode12：按 msg.coupling_count 查 task_points.yaml 取 wait_distance
+        作为固定位置到驼峰原点的距离（fix_dist）；target_id 用于追车抢占。
         """
         new_mode = msg.ctrl_mode
 
@@ -311,10 +348,18 @@ class SpeedTrackNode(Node):
         self.target_id = msg.target_id
         self.position_offset = msg.position
 
+        # mode12 同模式重发（coupling_count 变化换 wait 点）时也要重新查表
+        if new_mode == 12:
+            self._lookup_wait_point(msg.coupling_count)
+            if new_mode == self.current_mode:
+                # 仅更新了目标距离/限幅，不重置控制器、不切换
+                self._apply_speed_command_limits()
+                return
+
         if new_mode == self.current_mode:
             return
 
-        if new_mode in (0, 1, 2, 3, 4, 10, 11):
+        if new_mode in (0, 1, 2, 3, 4, 10, 11, 12):
             prev_mode = self.current_mode
             self.get_logger().info(
                 f"Mode switch: {prev_mode} → {new_mode}")
@@ -328,12 +373,14 @@ class SpeedTrackNode(Node):
                 self._need_controller_reset = True
                 self.stable_start_time = None
                 self._cruise_approaching = False
-            # 动态限幅仅对跟车模式生效，巡航模式使用固定速度值(task10/11)
-            if new_mode in (1, 2, 3):
+                self._fix_arrive_since = None
+                self._mode12_chase_frames = 0
+            # 动态限幅仅对跟车/定点模式生效，巡航模式使用固定速度值(task10/11)
+            if new_mode in (1, 2, 3, 12):
                 self._apply_speed_command_limits()
         else:
             self.get_logger().warn(
-                f"Received invalid ctrl_mode: {new_mode} (valid: 0,1,2,3,4,10,11), ignored")
+                f"Received invalid ctrl_mode: {new_mode} (valid: 0,1,2,3,4,10,11,12), ignored")
 
     def _target_result_callback(self, msg: DetectResult):
         """接收目标检测结果（/detect_result）。
@@ -345,6 +392,7 @@ class SpeedTrackNode(Node):
         self.relative_distance = msg.current_distance
         self.relative_velocity = msg.relative_velocity
         self.target_updated = True
+        self._detect_time = time.time()
 
     def _chassis_info_callback(self, msg: ChassisInfoFb):
         """接收底盘反馈的自车绝对速度 (ChassisInfoFb, m/s)。
@@ -356,7 +404,163 @@ class SpeedTrackNode(Node):
         gear = msg.ctrl_fb.ctrl_fb_gear
         self.ego_speed = -speed if gear == 2 else speed
 
+    def _fixposition_callback(self, msg: Odometry):
+        """接收 fixposition 融合定位（/fixposition/odometry_enu, ENU）。
+
+        仅缓存位置 (x, y) 和到达时间；坐标原点为驼峰(0,0)，
+        实际原点偏移由 fix_origin_x/fix_origin_y 参数修正。
+        """
+        self._fix_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        self._fix_time = time.time()
+
     # ═══════════════════════════════════════════════════════════════════════
+    # mode12: task_points.yaml / 固定位置距离
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _load_task_points(self, path):
+        """加载 task_points.yaml，提取 {coupling_count → wait_distance}。
+
+        yaml 结构：
+            tasks:
+              2: {coupling_count: 2, wait_distance: 0.0, wait_point: {...}, ...}
+              3: {coupling_count: 3, wait_distance: 2.0, ...}
+        文件缺失/解析失败时置空表并告警（mode12 会因查不到目标而保持刹车）。
+        """
+        self._task_points = {}
+        if not path:
+            self.get_logger().warn("task_points_file 未配置，mode12 不可用")
+            return
+        if not os.path.isfile(path):
+            self.get_logger().warn(f"task_points_file 不存在: {path}，mode12 不可用")
+            return
+        try:
+            import yaml
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            tasks = data.get("tasks") or {}
+            for key, val in tasks.items():
+                try:
+                    self._task_points[int(key)] = float(val["wait_distance"])
+                except (TypeError, ValueError, KeyError):
+                    self.get_logger().warn(f"task_points 条目异常，跳过: {key}")
+        except Exception as e:
+            self.get_logger().error(f"task_points.yaml 解析失败: {e}")
+            return
+        self.get_logger().info(
+            f"已加载 {len(self._task_points)} 个 wait 点 (coupling_count→wait_distance): "
+            f"{self._task_points}")
+
+    def _lookup_wait_point(self, coupling_count):
+        """按 coupling_count 查表取 wait_distance，更新 fix_dist。
+
+        查不到时置 _fix_target_valid=False（状态机保持刹车）。
+        """
+        pt = self._task_points.get(coupling_count)
+        if pt is not None:
+            self.fix_dist = float(pt)
+            self._fix_target_valid = True
+            self._fix_arrive_since = None
+            self._mode12_chase_frames = 0
+            if coupling_count != self._mode12_coupling:
+                self.get_logger().info(
+                    f"mode12 目标: coupling_count={coupling_count} → "
+                    f"wait_distance={self.fix_dist:.3f} m (到驼峰原点)")
+                self._mode12_coupling = coupling_count
+                self._need_controller_reset = True
+        else:
+            self._fix_target_valid = False
+            self.get_logger().warn(
+                f"mode12: coupling_count={coupling_count} 在 task_points 中未找到，保持刹车")
+
+    def _dist_from_origin(self):
+        """小车当前位置到驼峰原点的距离 = √((x-x0)² + (y-y0)²)。"""
+        dx = self._fix_xy[0] - self.fix_origin_x
+        dy = self._fix_xy[1] - self.fix_origin_y
+        return math.hypot(dx, dy)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # mode12: 前往固定位置(wait 点) 主计算
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _compute_mode12_fix(self, dt):
+        """mode12 前往固定位置。
+
+        pos_err = fix_dist − dist_from_origin → 位置 PID（无前馈，target_speed=0）。
+        输出带符号速度（正=远离原点/前进，负=靠近原点/后退），允许倒车修正。
+
+        抢占/到达：
+          - 感知到目标车厢 (current_id==target_id) 连续 3 帧 → 切 mode1 追车
+          - |pos_err| < fix_arrival_threshold 持续 fix_arrival_duration → 刹车,
+            /speed_state=2 (到点，与工程师确认)
+        """
+        brake = self._task0_brake_value_int
+
+        # ── 1. 无效目标 / 无定位 / 定位超时 → 刹车兜底 ──
+        if not self._fix_target_valid:
+            return 0.0, brake, 3
+        if self._fix_time <= 0.0:
+            self.get_logger().warn(
+                "mode12: 未收到 /fixposition/odometry_enu", throttle_duration_sec=2.0)
+            return 0.0, brake, 3
+        if time.time() - self._fix_time > 0.5:
+            self.get_logger().warn(
+                "mode12: /fixposition 定位超时(>0.5s)", throttle_duration_sec=2.0)
+            return 0.0, brake, 3
+
+        dist_ego = self._dist_from_origin()
+        pos_err = self.fix_dist - dist_ego
+
+        # ── 2. 追车抢占：目标出现（感知 current_id == 行为树 target_id）连续 3 帧 ──
+        detect_fresh = (time.time() - self._detect_time) < 0.5
+        if (self.target_id != 0 and detect_fresh
+                and self.current_carriage_id == self.target_id):
+            self._mode12_chase_frames += 1
+        else:
+            self._mode12_chase_frames = 0
+        if self._mode12_chase_frames >= 3:
+            self.get_logger().info(
+                f"mode12→mode1: 目标车厢 {self.current_carriage_id} 出现，切换追车")
+            self._mode12_chase_frames = 0
+            self.current_mode = 1
+            self._need_controller_reset = True
+            self.stable_start_time = None
+            speed_cmd = self._compute_mode1_follow(dt)
+            self.current_speed_cmd = speed_cmd
+            return speed_cmd, 0, self._compute_speed_state()
+
+        # ── 3. 到达判定（防抖）──
+        if abs(pos_err) < self.fix_arrival_threshold:
+            now = time.time()
+            if self._fix_arrive_since is None:
+                self._fix_arrive_since = now
+            elif now - self._fix_arrive_since >= self.fix_arrival_duration:
+                self.get_logger().info(
+                    f"mode12: 到达固定位置 dist={dist_ego:.3f} "
+                    f"(pos_err={pos_err:+.3f})，刹车")
+                self.current_mode = 0
+                self.current_speed_cmd = 0.0
+                self._fix_arrive_since = None
+                return 0.0, brake, 2   # 到点返回 2（与工程师确认）
+        else:
+            self._fix_arrive_since = None
+
+        # ── 4. 控制器复位 ──
+        if self._need_controller_reset:
+            self.controller.reset()
+            self._need_controller_reset = False
+
+        # ── 5. 位置 PID：定点无前馈，target_speed=0；允许负积分/倒车 ──
+        speed_cmd = self.controller.update(
+            target_speed=0.0,
+            ego_speed=self.ego_speed,
+            position_error=pos_err,
+            dt=dt,
+            clamp_integral_positive=False,
+        )
+        self.current_speed_cmd = speed_cmd
+        return speed_cmd, 0, 1
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # 时间工具
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -415,6 +619,10 @@ class SpeedTrackNode(Node):
             speed_cmd = self._compute_mode4_stop(dt)
             self.current_speed_cmd = speed_cmd
             return speed_cmd, 0, 1
+
+        # ── 模式 12: 前往固定位置(wait 点，按驼峰原点距离) ──
+        elif mode == 12:
+            return self._compute_mode12_fix(dt)
 
         # ── 模式 10: 前进巡航+定点 ──
         elif mode == 10:
@@ -650,7 +858,7 @@ class SpeedTrackNode(Node):
         if self._log_counter % 10 == 0:
             mode_names = {
                 0: "刹车", 1: "开始跟车", 2: "微调", 3: "恢复跟车",
-                4: "停车", 10: "前进巡航", 11: "后运动",
+                4: "停车", 10: "前进巡航", 11: "后运动", 12: "前往固定位置",
             }
             state_names = {1: "跟车中", 2: "正在共速", 3: "完成停车"}
             dbg = self.controller.get_debug()
