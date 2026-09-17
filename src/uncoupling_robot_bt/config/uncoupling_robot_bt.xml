@@ -1,0 +1,435 @@
+<root BTCPP_format="4">
+
+  <!-- ================================================================
+       MainTree: 动态摘钩作业主行为树 (依据 驼峰摘钩机器人状态机-v1.3)
+
+       架构:
+         Fallback(
+           E_STOP 全局监控 (每循环检查一次)
+           主流程 (S0→S1→S2→KRUFF[S1→...→S12→循环])
+         )
+
+       E_STOP 全局监控:
+         - 无急停 → FAILURE → 继续执行主流程
+         - 有急停 → 执行急停序列 → WaitForManualReset(RUNNING)
+         - 复位后 → ForceFailure → FAILURE → 主流程从 S0 重新开始
+
+       内层 RetryUntilSuccessful: CheckRemainingTasks FAILURE(有后续)→重试(循环回S3)
+                                  CheckRemainingTasks SUCCESS(全列清空)→退出→S12
+       外层 KRUFF: S12→ForceFailure→循环回S1
+       ================================================================ -->
+  <BehaviorTree ID="MainTree">
+
+    <!-- ============================================================
+         Fallback: 全局 E_STOP 监控 (非抢占式)
+         每次循环开始时检查 E_STOP，无急停才执行主流程。
+         ============================================================ -->
+    <Fallback name="global_estop_monitor">
+
+      <!-- ── 第一分支: E_STOP 全局监控 ────────────────────────────
+           无急停 → 所有 trigger 返回 FAILURE → Fallback FAILURE
+                   → Sequence FAILURE → Fallback 进入主流程
+           有急停 → Fallback SUCCESS → 执行急停动作 → WaitForManualReset(RUNNING)
+           复位后 → WaitForManualReset SUCCESS
+                 → ForceFailure → Sequence FAILURE → 主流程从 S0 重新开始
+           ─────────────────────────────────────────────────────────── -->
+      <Sequence name="estop_global_handler">
+        <Fallback name="estop_triggers">
+          <!-- IsMagneticGuideOnline: SUCCESS=在线, Inverter 反转后脱线→SUCCESS→触发 -->
+          <Inverter>
+            <Condition ID="IsMagneticGuideOnline"/>
+          </Inverter>
+          <Condition ID="IsEStopButtonPressed"/>
+          <Condition ID="IsHeartbeatLost"/>
+          <Condition ID="IsAtPositionLimit"/>
+          <Condition ID="IsCollisionRisk"/>
+        </Fallback>
+
+        <Sequence name="estop_actions">
+          <Action ID="EmergencyBrake"/>
+          <Action ID="CutPower"/>
+          <Action ID="ReportEStop"/>
+          <Action ID="WaitForManualReset"/>
+        </Sequence>
+
+        <!-- 复位完成后 ForceFailure → 使第一分支返回 FAILURE → 主流程重启 -->
+        <ForceFailure>
+          <AlwaysSuccess/>
+        </ForceFailure>
+      </Sequence>
+
+      <!-- ── 第二分支: 主流程 ────────────────────────────────────────
+           仅在 E_STOP 未触发时执行
+           ─────────────────────────────────────────────────────────── -->
+      <Sequence name="main_flow">
+        <SubTree ID="S0_INIT" _autoremap="true"/>
+
+        <!-- 外层循环: S1→S12→S1 (ForceFailure 使 KRUFF 持续循环)
+             ForceSuccess 包裹: KRUFF 退出时返回 FAILURE,
+             但正常完成(全列清空)应该是最终成功, 而非失败.
+             - KRUFF RUNNING (迭代中) → ForceSuccess RUNNING → 继续
+             - KRUFF FAILURE (循环退出) → ForceSuccess SUCCESS → 任务成功 -->
+        <ForceSuccess>
+          <KeepRunningUntilFailure>
+            <Sequence name="IdleToMissionLoop">
+              <SubTree ID="S1_IDLE" _autoremap="true"/>
+              <SubTree ID="S2_ARM_CHECK" _autoremap="true"/>
+
+              <!-- 内层循环: S3→S11 (单钩执行, 有后续任务则循环回 S3)
+                   RetryUntilSuccessful: child FAILURE→重试(循环), child SUCCESS→退出
+                   CheckRemainingTasks: remaining>0→FAILURE(循环), remaining==0→SUCCESS(退出至S12) -->
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence name="SingleHookExecutionFlow">
+                  <SubTree ID="S3_NAV_WAIT_AREA" _autoremap="true"/>
+                  <!-- _autoremap="true": 所有 SubTree 共享 MainTree 根黑板, 确保 remaining_tasks 等变量跨子树可见 -->
+                  <SubTree ID="S4_TARGET_POSITIONING" _autoremap="true"/>
+                  <SubTree ID="S5_TRACK_APPROACH" _autoremap="true"/>
+                  <SubTree ID="S6_SYNC_STABILIZE" _phase="PRE_WORK" _autoremap="true"/>
+                  <SubTree ID="S7_ARM_DEPLOY" _autoremap="true"/>
+                  <SubTree ID="S8_ATTACH_DECEL" _autoremap="true"/>
+                  <SubTree ID="S9_UNCOUPLE" _autoremap="true"/>
+                  <SubTree ID="S6_SYNC_STABILIZE" _phase="POST_WORK" _autoremap="true"/>
+                  <!-- S11: CheckRemainingTasks FAILURE(有后续)→RetryUntilSuccessful 循环回 S3
+                             CheckRemainingTasks SUCCESS(全列清空)→退出→S12 -->
+                  <SubTree ID="S11_ARM_RESET" _autoremap="true"/>
+                </Sequence>
+              </RetryUntilSuccessful>
+
+              <SubTree ID="S12_RETURN_HOME" _autoremap="true"/>
+              <ForceFailure>
+                <AlwaysSuccess/>
+              </ForceFailure>
+            </Sequence>
+          </KeepRunningUntilFailure>
+        </ForceSuccess>
+      </Sequence>
+
+    </Fallback>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S0: 上电自检
+       ================================================================ -->
+  <BehaviorTree ID="S0_INIT">
+    <Fallback>
+      <Sequence name="power_on_self_check">
+        <Condition ID="CheckCommunication"/>
+        <Condition ID="CheckSensors"/>
+        <Condition ID="CheckActuators"/>
+        <Script code="system_ready:=true"/>
+      </Sequence>
+      <ForceFailure>
+        <Action ID="ReportEStop"/>
+      </ForceFailure>
+    </Fallback>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S1: 空闲待命 (含低电量待机分支)
+       规范: Parallel(驻车制动 + 心跳维持 + Fallback(低电量分支 | 任务接收主线))
+       ================================================================ -->
+  <BehaviorTree ID="S1_IDLE">
+    <Sequence name="idle_standby">
+      <Action ID="ApplyParkingBrake"/>
+      <!-- 阻塞直到电量正常 -->
+      <Fallback name="battery_check">
+        <Condition ID="IsBatteryNormal"/>
+        <Sequence name="low_battery_standby">
+          <Script code="battery_low:=true"/>
+          <Action ID="RejectIncomingTasks"/>
+          <Action ID="WaitBatteryRecovery"/>
+        </Sequence>
+      </Fallback>
+      <Script code="battery_low:=false"/>
+
+      <!-- 启动后台感知节点: 雷达融合 + 转向架检测 + 间隙计数 + MPC -->
+      <Action ID="StartGapCounting"/>
+
+      <!-- 接收 CIPS 任务 -->
+      <Action ID="WaitForCIPSTask" timeout="0"/>
+      <Action ID="ParseTaskMessage"/>
+      <!-- 初始化任务计数: target_gap_id=3 (CIPS报文指定), remaining_tasks=3 -->
+      <Script code="target_gap_id:=3;remaining_tasks:=1"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S2: 双臂复位校验 — 检查共速臂(co_arm)与机械臂(arm)是否在安全Home位
+       规范: 依次检查 co_arm 和 arm。
+             若未到位 → 下发复位指令 → 轮询等待复位状态信号(无限重试)
+             co_arm 和 arm 均检查通过后 → SUCCESS
+       ================================================================ -->
+  <BehaviorTree ID="S2_ARM_CHECK">
+    <Sequence name="arm_home_check">
+
+      <!-- 共速臂(co_arm) Home 位检查  -->
+      <Fallback name="co_arm_home_check">
+        <Condition ID="CheckCoSpeedArm" command="RESET"/>
+        <Sequence name="co_arm_reset_sequence">
+          <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+          <Action ID="SendCoSpeedArmCommand" command="AUTO_MODE"/>
+          <WaitCoSpeedArm command="RESET" timeout="-1"/>
+        </Sequence>
+      </Fallback>
+
+      <!-- 机械臂(arm) Home 位检查  -->
+      <Fallback name="arm_home_check">
+        <Condition ID="CheckMechanicalArm" command="HOME"/>
+        <Sequence name="arm_reset_sequence">
+          <Action ID="SendMechanicalArmCommand" command="RESET"/>
+          <Action ID="SendMechanicalArmCommand" command="AUTO_MODE"/>
+          <WaitMechanicalArm command="HOME" timeout="-1"/>
+        </Sequence>
+      </Fallback>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S3: 前往待位区（磁导航循迹）
+       规范: Parallel(错失目标监控 | 寻迹行驶主线), 一败则败
+       ================================================================ -->
+  <BehaviorTree ID="S3_NAV_WAIT_AREA">
+    <Sequence name="nav_to_wait_area">
+      <Action ID="ReleaseParkingBrake"/>
+
+      <Fallback name="nav_with_guard">
+        <!-- 导航异常守卫 -->
+        <Sequence>
+          <Condition ID="IsMagneticGuideOnline"/>
+          <Inverter>
+            <Condition ID="IsAtPositionLimit"/>
+          </Inverter>
+          <Inverter>
+            <Condition ID="IsHeartbeatLost"/>
+          </Inverter>
+        </Sequence>
+        <!-- 执行导航 -->
+        <Action ID="NavigateToWaitArea" speed="2.0" mode="magnetic_guide"/>
+      </Fallback>
+
+      <Action ID="ApplyParkingBrake"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S4: 占位等待（雷达锁定目标间隙, 解算 v_train 与 D_trigger）
+       规范: Fallback(正常流程: 间隙计数+锁定 | 故障分支: 上报+驻车+等待复位)
+
+       LockTargetGap SUCCESS → Fallback 选第一分支 → 正常进入 S5
+       LockTargetGap FAILURE → Fallback 选第二分支 → 上报故障+驻车+阻塞等待人工复位
+       故障分支中 WaitForManualReset 返回 RUNNING → S4 持续 RUNNING → S5~S12 永不执行
+       ================================================================ -->
+  <BehaviorTree ID="S4_TARGET_POSITIONING">
+    <Fallback name="lock_target_with_fault_handler">
+      <!-- 正常分支: 锁定目标间隙 -->
+      <Sequence name="target_positioning">
+
+        <Action ID="CheckTargetCarriage" distance_threshold="0.9"/>
+
+        <!-- target_id: 从 {target_gap_id} 黑板值读取 (S1 Script 初始化为 3)
+             gap_count: 从 {gap_count} 黑板值读取 (bt_executor 从 /current_gap_count 话题写入) -->
+        <Action ID="LockTargetGap" target_id="{target_gap_id}" gap_count="{gap_count}"/>
+      </Sequence>
+
+      <!-- 故障处理分支: LockTargetGap 返回 FAILURE (错过目标间隙) 时触发 -->
+      <Sequence name="lock_failure_handler">
+        <Action ID="ReportFault" fault_code="LOCK_TARGET_FAILED"/>
+        <Action ID="ApplyParkingBrake"/>
+        <Action ID="WaitForManualReset"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S5: MPC 动态追车与对齐
+       规范: Sequence(解算轨迹→设MPC权重→安全守卫→MPC追车→收敛判定)
+
+       ReleaseParkingBrake 已移除: MPC 控制器直接通过 /cmd_vel 控制底盘速度,
+       驻车制动在 S3 中已解除, MPC 接管后不再需要显式的制动解除动作.
+       ================================================================ -->
+  <BehaviorTree ID="S5_TRACK_APPROACH">
+    <Sequence name="track_approach">
+      <!-- ReleaseParkingBrake 已移除: MPC 直接控制底盘 /cmd_vel -->
+
+      <Action ID="GenerateInterceptTrajectory"/>
+
+      <Action ID="SetMPCWeights" speed_weight="{w_v}" position_weight="{w_x}"/>
+
+      <Fallback name="track_with_guard">
+        <Sequence name="track_safety_checks">
+          <Condition ID="IsTargetInRange"/>
+          <Inverter>
+            <Condition ID="IsCollisionRisk"/>
+          </Inverter>
+        </Sequence>
+
+        <Action ID="MPCTrackApproach"/>
+      </Fallback>
+
+      <Condition ID="IsTrackingErrorWithin" tolerance="{epsilon}"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S6: 锁定相对静止
+       规范: MPC重载(位置主导) → 死区防抖 → 稳态计时 → 分支
+       MainTree 中 S6 出现两次:
+         _phase=PRE_WORK  → 通过后进入 S7
+         _phase=POST_WORK → 通过后进入 S11
+       ================================================================ -->
+  <BehaviorTree ID="S6_SYNC_STABILIZE">
+    <Sequence name="sync_stabilize">
+      <Action ID="SetMPCWeights" speed_weight="{w_v_low}" position_weight="{w_x_high}"/>
+
+      <Fallback name="stabilize_branches">
+        <!-- 分支A: 作业前 → 稳态计时达标 → 进入 S7 -->
+        <Sequence name="branch_before_work">
+          <Condition ID="IsBeforeWork"/>
+          <Action ID="WaitStabilization" timeout="2000"/>
+        </Sequence>
+
+        <!-- 分支B: 作业后 → 对齐稳定，收回共速臂 → 进入 S11 -->
+        <Sequence name="branch_after_work">
+          <Inverter>
+            <Condition ID="IsBeforeWork"/>
+          </Inverter>
+          <!-- <Action ID="RetractCoSpeedArm"/> -->
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S7: 共速臂(co_arm)展开 — 发送伸展指令并等待到位
+       规范: Sequence(稳态确认 → 发送DEPLOY指令 → 轮询到位)
+       ================================================================ -->
+  <BehaviorTree ID="S7_ARM_DEPLOY">
+    <Sequence name="arm_deploy">
+      <!-- MPC 稳态保持中, S6 已确认稳态 -->
+      <Condition ID="IsStabilized" timeout="2000"/>
+
+      <!-- 向 co_arm 共速臂 PLC 发送伸展指令 -->
+      <Action ID="SendCoSpeedArmCommand" command="DEPLOY"/>
+
+      <!-- 设置车型信息 (40008): 1=P70, 2=P64K, ... 9=NX70 -->
+      <Action ID="SendCoSpeedArmCommand" command="SET_CAR_TYPE"/>
+
+      <!-- 轮询等待共速臂展开到位  -->
+      <WaitCoSpeedArm command="DEPLOY" timeout="-1"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S8: 微减速贴附
+       规范: Parallel(极限位置守护 | 贴附主线: 微减速+充磁+确认吸合)
+       ================================================================ -->
+  <BehaviorTree ID="S8_ATTACH_DECEL">
+    <Sequence name="attach_decel">
+      <Action ID="ApplyMicroDeceleration" decel_rate="0.05"/>
+
+      <WaitCoSpeedArm command="ATTACH" timeout="-1"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S9: 空档从动与提钩 — 给 arm (机械臂) 发送开始工作信号后执行提钩
+       规范: Sequence(发送START_WORK→空档切换→速度重置→提钩重试×3→复位)
+       ================================================================ -->
+  <BehaviorTree ID="S9_UNCOUPLE">
+    <Sequence name="uncouple">
+      <!-- 向 arm (机械臂) 发送开始工作信号: 唤醒机械臂, 进入就绪状态 -->
+      <Action ID="SendMechanicalArmCommand" command="START_WORK"/>
+
+      <!-- 空档从动切换 -->
+      <Action ID="SwitchToNeutralMode"/>
+
+      <!-- 目标速度重置 -->
+      <Action ID="ResetTargetSpeed"/>
+
+      <!-- 提钩作业: 持续到提钩作业完成 -->
+      <WaitMechanicalArm command="ISOK" timeout="-1"/>
+
+      <!-- 作业完毕: 取消磁吸 + 提钩臂收回 -->
+      <Action ID="SendCoSpeedArmCommand" command="DEMAGNETIZE"/>
+      <Action ID="SendMechanicalArmCommand" command="RESET"/>
+      <!-- <Action ID="RetractCoSpeedArm"/> -->
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S11: 共速臂复位 + 任务分发
+       规范: Sequence(收回co_arm→等待到位→递减任务计数→检查后续任务→动力交接)
+         RetryUntilSuccessful: child FAILURE→重试(循环回S3), child SUCCESS→退出(→S12)
+         有后续任务 → CheckRemainingTasks FAILURE → RetryUntilSuccessful 循环回 S3
+         全列清空    → CheckRemainingTasks SUCCESS → RetryUntilSuccessful 退出至 S12
+       ================================================================ -->
+  <BehaviorTree ID="S11_ARM_RESET">
+    <Sequence name="arm_reset">
+      <!-- 1. 共速臂(co_arm)收回指令 -->
+      <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+
+      <!-- 2. 轮询等待共速臂收纳到位 (无限重试, 直到 Home 位确认) -->
+      <WaitCoSpeedArm command="RESET" timeout="-1"/>
+
+      <!-- 3. 递减任务计数: 当前摘钩任务完成 -->
+      <Script code="remaining_tasks := remaining_tasks - 1"/>
+
+      <!-- 4. 检查后续任务:
+             remaining > 0 → FAILURE → RetryUntilSuccessful 重试 → 循环回 S3
+             remaining == 0 → SUCCESS → 退出 RetryUntilSuccessful → S12 -->
+      <Condition ID="CheckRemainingTasks"/>
+
+      <Action ID="ResetTargetSpeed"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S12: 返航结束
+       规范: Sequence(清空计数→关闭感知→磁导航返航→驻车→上报CIPS→S1)
+       外层 KRUFF 中 S12 后跟 ForceFailure, 自动循环回 S1
+       ================================================================ -->
+  <BehaviorTree ID="S12_RETURN_HOME">
+    <Sequence name="retract_and_return">
+      <!-- 共速臂(co_arm) Home 位检查  -->
+      <Fallback name="co_arm_home_check">
+        <Condition ID="CheckCoSpeedArm" command="RESET"/>
+        <Sequence name="co_arm_reset_sequence">
+          <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+          <Action ID="SendCoSpeedArmCommand" command="AUTO_MODE"/>
+          <WaitCoSpeedArm command="RESET" timeout="-1"/>
+        </Sequence>
+      </Fallback>
+
+      <!-- 机械臂(arm) Home 位检查  -->
+      <Fallback name="arm_home_check">
+        <Condition ID="CheckMechanicalArm" command="HOME"/>
+        <Sequence name="arm_reset_sequence">
+          <Action ID="SendMechanicalArmCommand" command="RESET"/>
+          <Action ID="SendMechanicalArmCommand" command="AUTO_MODE"/>
+          <WaitMechanicalArm command="HOME" timeout="-1"/>
+        </Sequence>
+      </Fallback>
+
+      <Action ID="NavigateToOrigin" mode="magnetic_guide"/>
+
+      <Action ID="ApplyParkingBrake"/>
+      <Action ID="ReportTaskComplete"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+</root>

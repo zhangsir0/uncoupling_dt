@@ -32,10 +32,13 @@
 #include "data_interfaces/msg/detect_result.hpp"
 #include "data_interfaces/msg/hook_task_array.hpp"
 #include "data_interfaces/msg/speed_command.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using namespace std::chrono_literals;
 
@@ -44,6 +47,53 @@ using namespace std::chrono_literals;
   (tree)->rootBlackboard()->set((key), (val)); \
   for (const auto& st : (tree)->subtrees) st->blackboard->set((key), (val)); \
 } while(0)
+
+// ── 解析摘钩位置表 CSV → vector<HookPosition> ──
+static std::shared_ptr<std::vector<uncoupling_robot::HookPosition>>
+loadHookPositionsCsv(const std::string& path)
+{
+  auto positions = std::make_shared<std::vector<uncoupling_robot::HookPosition>>();
+  std::ifstream file(path);
+  if (!file.is_open()) {
+    RCLCPP_ERROR(rclcpp::get_logger("bt"), "[位置表] 无法打开文件: %s", path.c_str());
+    return positions;
+  }
+
+  auto trim = [](std::string s) {
+    const char* ws = " \t\r\n";
+    s.erase(0, s.find_first_not_of(ws));
+    s.erase(s.find_last_not_of(ws) + 1);
+    return s;
+  };
+
+  std::string line;
+  bool first = true;
+  while (std::getline(file, line)) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (first) { first = false; continue; }  // 跳过表头
+
+    std::vector<std::string> cols;
+    std::stringstream ss(line);
+    std::string col;
+    while (std::getline(ss, col, ',')) cols.push_back(trim(col));
+    if (cols.size() < 5) continue;
+
+    try {
+      uncoupling_robot::HookPosition hp;
+      hp.coupling_count = std::stoi(cols[0]);
+      hp.uncouple_x = std::stod(cols[1]);
+      hp.uncouple_y = std::stod(cols[2]);
+      hp.wait_x = std::stod(cols[3]);
+      hp.wait_y = std::stod(cols[4]);
+      positions->push_back(hp);
+    } catch (...) {
+      RCLCPP_WARN(rclcpp::get_logger("bt"), "[位置表] 解析失败, 跳过行: %s", line.c_str());
+    }
+  }
+  RCLCPP_INFO(rclcpp::get_logger("bt"), "[位置表] 加载完成: %s (%zu 组)", path.c_str(), positions->size());
+  return positions;
+}
 
 class BtExecutorNode : public rclcpp::Node
 {
@@ -60,6 +110,28 @@ public:
       this->declare_parameter("groot_port", 1667);
     if (!this->has_parameter("enable_groot"))
       this->declare_parameter("enable_groot", true);
+    if (!this->has_parameter("hook_positions_csv"))
+      this->declare_parameter("hook_positions_csv", "config/hook_positions.csv");
+
+    // ── 加载摘钩位置表 (CSV 固定数据) ──
+    {
+      std::string csv_path = get_parameter("hook_positions_csv").as_string();
+      std::string full_csv;
+      for (const auto& p : {
+          csv_path,
+          "/home/sz/colcon_ws/src/uncoupling_robot_bt/" + csv_path,
+          "/home/sz/workspace/src/uncoupling_robot_bt/" + csv_path,
+          "src/uncoupling_robot_bt/" + csv_path,
+      }) {
+        if (std::filesystem::exists(p)) { full_csv = p; break; }
+      }
+      if (full_csv.empty()) {
+        RCLCPP_WARN(get_logger(), "[位置表] 找不到文件, 使用空表: %s", csv_path.c_str());
+        hook_positions_ = std::make_shared<std::vector<uncoupling_robot::HookPosition>>();
+      } else {
+        hook_positions_ = loadHookPositionsCsv(full_csv);
+      }
+    }
 
     // ── 发布 ─────────────────────────────────────────────────
     hmi_state_pub_     = create_publisher<data_interfaces::msg::BtHmiState>("/bt_hmi_state", 10);
@@ -189,6 +261,18 @@ public:
         // RCLCPP_INFO(get_logger(), "[黑板] speed_state=%d", msg->data);
       }, sub_opt);
 
+    // ── /fixposition/odometry_enu → odom_enu_x/y/ready ──
+    // fixposition 用 sensor_short QoS (best-effort), 必须用 SensorDataQoS 才能收到
+    odom_enu_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      "/fixposition/odometry_enu",
+      rclcpp::SensorDataQoS(),
+      [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
+        if (!tree_) return;
+        SET_BB_ALL(tree_, "odom_enu_ready", 1);
+        SET_BB_ALL(tree_, "odom_enu_x", msg->pose.pose.position.x);
+        SET_BB_ALL(tree_, "odom_enu_y", msg->pose.pose.position.y);
+      }, sub_opt);
+
     // ── 初始化行为树 ─────────────────────────────────────────
     if (!initBehaviorTree()) {
       RCLCPP_ERROR(get_logger(), "行为树初始化失败!");
@@ -284,6 +368,10 @@ private:
       RCLCPP_INFO(get_logger(), "[黑板] work_mode ← %d (%s)", m,
                   (hmi_mode_in_bb_ >= 0) ? "/ctrl_hmi" : "默认");
     }
+    if (!hook_positions_loaded_) {
+      SET_BB_ALL(tree_, "hook_positions", hook_positions_);
+      hook_positions_loaded_ = true;
+    }
 
     // ═════════════════════════════════════════════════════
     // ★ E_STOP 抢占式监测 (C++ 层)
@@ -317,9 +405,6 @@ private:
     bridgeInt32Pair("arm_cmd_reg", "arm_cmd_val",
                     last_arm_reg_, last_arm_val_, arm_cmd_pub_);
 
-    // ── /speed_command ──
-    bridgeSpeedCommand();
-
     // ── /cips_cmd ──
     bridgeInt32Pair("cips_cmd_reg", "cips_cmd_val",
                     last_cips_reg_, last_cips_val_, cips_cmd_pub_);
@@ -346,31 +431,6 @@ private:
       SET_BB_ALL(tree_, reg_key, -1);
       SET_BB_ALL(tree_, val_key, -1);
     }
-  }
-
-  // SpeedCommand 桥接: 黑板 → /speed_command (非 SpeedControlCommand 节点用)
-  void bridgeSpeedCommand()
-  {
-    auto readI32 = [this](const char* k, int32_t def = -1) {
-      auto a = tree_->rootBlackboard()->getAnyLocked(k);
-      if (a) try { return a->cast< int32_t >(); } catch (...) {}
-      return def;
-    };
-    int32_t gare = readI32("speed_cmd_gare");
-    if (gare < 0) return;
-
-    auto msg = data_interfaces::msg::SpeedCommand();
-    msg.target_gare      = static_cast<uint8_t>(gare);
-    msg.ctrl_mode        = static_cast<uint8_t>(readI32("speed_cmd_mode"));
-    msg.target_id        = static_cast<uint8_t>(readI32("speed_cmd_target_id", 0));
-    msg.position         = [&]{ auto a=tree_->rootBlackboard()->getAnyLocked("speed_cmd_position"); if(a)try{return static_cast<float>(a->cast<double>());}catch(...){} return 0.7f; }();
-    msg.max_forward_vel  = [&]{ auto a=tree_->rootBlackboard()->getAnyLocked("speed_cmd_fwd_vel"); if(a)try{return static_cast<float>(a->cast<double>());}catch(...){} return 0.0f; }();
-    msg.max_backward_vel = [&]{ auto a=tree_->rootBlackboard()->getAnyLocked("speed_cmd_bwd_vel"); if(a)try{return static_cast<float>(a->cast<double>());}catch(...){} return 0.0f; }();
-    msg.max_acc          = [&]{ auto a=tree_->rootBlackboard()->getAnyLocked("speed_cmd_acc"); if(a)try{return static_cast<float>(a->cast<double>());}catch(...){} return 0.0f; }();
-    msg.max_dec          = [&]{ auto a=tree_->rootBlackboard()->getAnyLocked("speed_cmd_dec"); if(a)try{return static_cast<float>(a->cast<double>());}catch(...){} return 0.0f; }();
-    msg.coupling_count   = static_cast<uint8_t>(readI32("speed_cmd_coupling_count", 0));
-    speed_cmd_pub_->publish(msg);
-    SET_BB_ALL(tree_, "speed_cmd_gare", -1);
   }
 
   // ═════════════════════════════════════════════════════════
@@ -411,13 +471,18 @@ private:
   {
     RCLCPP_ERROR(get_logger(), "[E_STOP] %s 抢占式急停! 暂停行为树, 等待 HMI mode=4 复位...", source);
     estop_active_ = true;
-    SET_BB_ALL(tree_, "speed_cmd_gare", 1);         // gear=P
-    SET_BB_ALL(tree_, "speed_cmd_mode", 0);          // 刹车
-    SET_BB_ALL(tree_, "speed_cmd_fwd_vel", 0.0);
-    SET_BB_ALL(tree_, "speed_cmd_bwd_vel", 0.0);
-    SET_BB_ALL(tree_, "speed_cmd_acc", 0.0);
-    SET_BB_ALL(tree_, "speed_cmd_dec", 0.0);
-    SET_BB_ALL(tree_, "speed_cmd_coupling_count", 0);
+    // 直接发布刹车指令 (方案A: 不经过黑板桥接)
+    auto msg = data_interfaces::msg::SpeedCommand();
+    msg.target_gare      = 1;   // gear=P
+    msg.ctrl_mode        = 0;   // 刹车
+    msg.target_id        = 0;
+    msg.position         = 0.0f;
+    msg.max_forward_vel  = 0.0f;
+    msg.max_backward_vel = 0.0f;
+    msg.max_acc          = 0.0f;
+    msg.max_dec          = 0.0f;
+    msg.coupling_count   = 0;
+    speed_cmd_pub_->publish(msg);
   }
 
   // ═════════════════════════════════════════════════════════
@@ -444,6 +509,7 @@ private:
           tree_ = std::make_unique<BT::Tree>(factory_.createTree("MainTree"));
           ros_node_set_in_bb_ = false;
           hmi_mode_injected_ = false;
+          hook_positions_loaded_ = false;
           recreateGrootPublisher();
           double rate = get_parameter("tick_rate").as_double();
           tick_timer_ = create_wall_timer(
@@ -588,6 +654,7 @@ private:
   rclcpp::Subscription<data_interfaces::msg::HookTaskArray>::SharedPtr cips_task_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr cips_status_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr speed_state_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_enu_sub_;
 
   // 桥接状态缓存
   int32_t last_co_arm_reg_ = -1, last_co_arm_val_ = -1;
@@ -598,6 +665,10 @@ private:
   int hmi_mode_in_bb_ = 1;
   bool hmi_mode_injected_ = false;
   bool ros_node_set_in_bb_ = false;
+
+  // 摘钩位置表 (CSV 固定数据)
+  std::shared_ptr<std::vector<uncoupling_robot::HookPosition>> hook_positions_;
+  bool hook_positions_loaded_ = false;
 
   // E_STOP 抢占
   bool estop_active_ = false;

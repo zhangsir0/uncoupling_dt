@@ -1,0 +1,36 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="arm_home_check">
+
+      <!-- 共速臂(co_arm) Home 位检查 -->
+      <Fallback name="co_arm_home_check">
+        <Condition ID="CheckCoSpeedArm" command="RESET"/>
+        <Sequence name="co_arm_reset_sequence">
+          <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+          <Action ID="SendCoSpeedArmCommand" command="AUTO_MODE"/>
+          <RetryUntilSuccessful num_attempts="-1">
+            <Condition ID="CheckCoSpeedArm" command="RESET"/>
+          </RetryUntilSuccessful>
+        </Sequence>
+      </Fallback>
+
+      <!-- 机械臂(arm) Home 位检查 -->
+      <Fallback name="arm_home_check">
+        <Condition ID="CheckMechanicalArm" command="HOME"/>
+        <Sequence name="arm_reset_sequence">
+          <Action ID="SendMechanicalArmCommand" command="RESET"/>
+          <Action ID="SendMechanicalArmCommand" command="AUTO_MODE"/>
+          <RetryUntilSuccessful num_attempts="-1">
+            <Condition ID="CheckMechanicalArm" command="HOME"/>
+          </RetryUntilSuccessful>
+        </Sequence>
+      </Fallback>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S3: 前往待位区 (同原版)
+       ================================================================ -->
+</root>

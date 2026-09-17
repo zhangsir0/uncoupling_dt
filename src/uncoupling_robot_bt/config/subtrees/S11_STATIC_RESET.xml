@@ -1,0 +1,25 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="static_arm_reset">
+
+      <!-- 1. 递减任务计数: 当前摘钩任务完成 -->
+      <Script code="remaining_tasks := remaining_tasks - 1; task_round := task_round + 1"/>
+
+      <!-- 2. 检查后续任务:
+             remaining > 0 → FAILURE → RetryUntilSuccessful 重试 → 循环回 S3
+             remaining == 0 → SUCCESS → 退出 RetryUntilSuccessful → S12 -->
+      <Condition ID="CheckRemainingTasks"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ╔══════════════════════════════════════════════════════════════╗
+     ║               共享子树: S12 返航结束                          ║
+     ║               两种模式均需校验 co_arm + arm                   ║
+     ╚══════════════════════════════════════════════════════════════╝ -->
+
+  <!-- ================================================================
+       S12: 返航结束 (两种模式共用 — 均需确认 co_arm + arm 在 Home 位)
+       ================================================================ -->
+</root>

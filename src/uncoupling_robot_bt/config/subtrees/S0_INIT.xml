@@ -1,0 +1,29 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Fallback>
+      <Sequence name="power_on_self_check">
+        <Condition ID="CheckCommunication"/>
+        <Condition ID="CheckSensors"/>
+        <Condition ID="CheckActuators"/>
+        <Script code="system_ready:=true"/>
+        <!-- ★ work_mode 现在由 bt_executor_node 在首次 tick 时写入黑板,
+            来源: /ctrl_hmi 话题的 hmi_ctrl_mode 字段
+            - hmi_ctrl_mode=0: 行为树停止 (HMI 手动控制)
+            - hmi_ctrl_mode=1: work_mode=1 (自动动态摘钩, 默认)
+            - hmi_ctrl_mode=2: work_mode=0 (自动静态摘钩)
+            - hmi_ctrl_mode=3: 解除 ESTOP (WaitForManualReset 检测后返回 SUCCESS)
+            S0 不再硬编码 work_mode, 由 C++ 层作为单一数据源管理.
+            若树重建 (E_STOP 复位 / HMI mode 切换), bt_executor
+            会将上次 HMI 设置的模式重新注入黑板, 确保模式持久化. -->
+      </Sequence>
+      <ForceFailure>
+        <Action ID="ReportEStop"/>
+      </ForceFailure>
+    </Fallback>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S1: 空闲待命 (同原版)
+       ================================================================ -->
+</root>

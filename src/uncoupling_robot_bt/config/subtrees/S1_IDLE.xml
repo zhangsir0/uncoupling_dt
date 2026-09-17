@@ -1,0 +1,25 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="idle_standby">
+      <Action ID="ApplyParkingBrake"/>
+      <Fallback name="battery_check">
+        <Condition ID="IsBatteryNormal"/>
+        <Sequence name="low_battery_standby">
+          <Script code="battery_low:=true"/>
+          <Action ID="RejectIncomingTasks"/>
+          <Action ID="WaitBatteryRecovery"/>
+        </Sequence>
+      </Fallback>
+      <Script code="battery_low:=false"/>
+      <Action ID="StartGapCounting"/>
+      <Action ID="WaitForCIPSTask" timeout="0"/>
+      <Action ID="ParseTaskMessage"/>
+      <Script code="target_gap_id:=0; remaining_tasks:=2; task_round:=0"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S2: 双臂复位校验 (两种模式均需要 — co_arm + arm 都检查)
+       ================================================================ -->
+</root>

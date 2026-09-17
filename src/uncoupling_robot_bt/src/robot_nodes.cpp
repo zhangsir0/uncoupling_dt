@@ -2,6 +2,7 @@
 #include "data_interfaces/msg/hook_task_array.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <chrono>
+#include <cmath>
 
 namespace uncoupling_robot
 {
@@ -53,23 +54,6 @@ static void setBBCmd(BT::Blackboard::Ptr bb, const std::string& reg_key, int32_t
 {
   bb->set(reg_key, reg);
   bb->set(val_key, val);
-}
-
-// 写 SpeedCommand 标记
-static void setBBSpeedCmd(BT::Blackboard::Ptr bb,
-                          int gare, int mode, int target_id, float position,
-                          float fwd_vel, float bwd_vel, float acc, float dec,
-                          int coupling_count = 0)
-{
-  bb->set("speed_cmd_gare",           gare);
-  bb->set("speed_cmd_mode",           mode);
-  bb->set("speed_cmd_target_id",      target_id);
-  bb->set("speed_cmd_position",       static_cast<double>(position));
-  bb->set("speed_cmd_fwd_vel",        static_cast<double>(fwd_vel));
-  bb->set("speed_cmd_bwd_vel",        static_cast<double>(bwd_vel));
-  bb->set("speed_cmd_acc",            static_cast<double>(acc));
-  bb->set("speed_cmd_dec",            static_cast<double>(dec));
-  bb->set("speed_cmd_coupling_count", coupling_count);
 }
 
 // ================================================================
@@ -149,6 +133,12 @@ BT::NodeStatus WaitForCIPSTask::onRunning()
 
   auto bb = config().blackboard;
 
+  // 限流: "cips_task_array 为空" 的 RUNNING 日志每 tick 打印, 限制为 1 次/秒
+  static auto s_next_log = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  const bool log_ok = (now >= s_next_log);
+  if (log_ok) s_next_log = now + std::chrono::seconds(2);
+
   // 检查 cips_40001 (读锁立即释放)
   if (bbReadInt(bb, "cips_40001") != 1) return BT::NodeStatus::RUNNING;
 
@@ -156,7 +146,10 @@ BT::NodeStatus WaitForCIPSTask::onRunning()
   std::shared_ptr<data_interfaces::msg::HookTaskArray> tasks;
   {
     auto a = bb->getAnyLocked("cips_task_array");
-    if (!a) { RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "cips_40001==1 但 cips_task_array 为空"); return BT::NodeStatus::RUNNING; }
+    if (!a) {
+      if (log_ok) RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "cips_40001==1 但 cips_task_array 为空");
+      return BT::NodeStatus::RUNNING;
+    }
     try { tasks = a->cast<std::shared_ptr<data_interfaces::msg::HookTaskArray>>(); } catch (...) { return BT::NodeStatus::FAILURE; }
   }  // ← 锁已释放, 下面可以安全 set
 
@@ -207,7 +200,7 @@ BT::NodeStatus CheckCoSpeedArm::tick()
     RCLCPP_INFO(rclcpp::get_logger("bt_arm"), "CheckCoSpeedArm: command=%s expected=%d status=%d SUCCESS",
               cmd.value().c_str(), expected, status);
   }
-  if (status >= 110) return BT::NodeStatus::SUCCESS;  // co-arm故障, 直接返回 SUCCESS, 避免阻塞
+  if (status >= 110) return BT::NodeStatus::FAILURE;  // co-arm故障, 直接返回 FAILURE, 避免阻塞
   return (status == expected) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 
@@ -221,7 +214,7 @@ BT::NodeStatus CheckMechanicalArm::tick()
     RCLCPP_INFO(rclcpp::get_logger("bt_arm"), "CheckMechanicalArm: command=%s expected=%d status=%d SUCCESS",
               cmd.value().c_str(), expected, status);
   }
-  if (status >= 110) return BT::NodeStatus::SUCCESS;  // 机械臂故障, 直接返回 SUCCESS, 避免阻塞
+  if (status >= 110) return BT::NodeStatus::FAILURE;  // 机械臂故障, 直接返回 FAILURE, 避免阻塞
   return (status == expected) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 
@@ -250,7 +243,7 @@ BT::NodeStatus WaitCoSpeedArm::onRunning()
     return BT::NodeStatus::SUCCESS;
   }
   if (status >= 110) {
-    RCLCPP_WARN(rclcpp::get_logger("bt_arm"), "WaitCoSpeedArm: command=%s expected=%d status=%d SUCCESS",
+    RCLCPP_WARN(rclcpp::get_logger("bt_arm"), "WaitCoSpeedArm: command=%s expected=%d status=%d FAILURE",
                 command_.c_str(), expected, status);
     return BT::NodeStatus::FAILURE;
   }
@@ -289,6 +282,11 @@ BT::NodeStatus WaitMechanicalArm::onRunning()
     RCLCPP_INFO(rclcpp::get_logger("bt_arm"), "WaitMechanicalArm: command=%s expected=%d status=%d SUCCESS",
                 command_.c_str(), expected, status);
     return BT::NodeStatus::SUCCESS;
+  }
+  if (status >= 110) {
+    RCLCPP_WARN(rclcpp::get_logger("bt_arm"), "WaitMechanicalArm: command=%s expected=%d status=%d FAILURE",
+                command_.c_str(), expected, status);
+    return BT::NodeStatus::FAILURE;
   }
   if (timeout_ > 0) {
     auto now = config().blackboard->get<rclcpp::Node::SharedPtr>("ros_node")->now();
@@ -329,7 +327,7 @@ BT::NodeStatus ExtractTaskInfo::tick()
   if (!tasks || task_round < 0 || static_cast<size_t>(task_round) >= tasks->hook_tasks.size()) {
     RCLCPP_ERROR(rclcpp::get_logger("bt_task"),
       "task_round=%d 越界 (total=%zu)", task_round, tasks ? tasks->hook_tasks.size() : 0);
-    return BT::NodeStatus::FAILURE;  // 越界时返回 SUCCESS, 避免阻塞
+    return BT::NodeStatus::SUCCESS;  // 越界时返回 SUCCESS, 避免阻塞
   }
 
   const auto& t = tasks->hook_tasks[task_round];
@@ -361,80 +359,186 @@ BT::NodeStatus MagneticGuideOnline::tick()
   return BT::NodeStatus::SUCCESS;  // mock: 在线
 }
 
-NavigateToWaitArea::NavigateToWaitArea(const std::string& name, const BT::NodeConfig& config)
+// ================================================================
+// S4: 间隙定位 — 检查目标车厢 (ID 判断 + 距离阈值判断)
+//   detect_id == train_id 且 |detect_distance| <= threshold → SUCCESS
+//   detect_id == train_id 且 |detect_distance| >  threshold → FAILURE
+//   threshold < 0 时不作位置判断 (仅 ID 判断)
+//   detect_id == 255 (无效值/无检测) → RUNNING
+// ================================================================
+CheckTargetCarriage::CheckTargetCarriage(const std::string& name, const BT::NodeConfig& config)
   : BT::StatefulActionNode(name, config) {}
 
-BT::NodeStatus NavigateToWaitArea::onStart()
+BT::NodeStatus CheckTargetCarriage::onStart()
 {
   MOCK_CHECK_NODE();
-  if (auto sp = getInput<double>("speed")) speed_ = sp.value();
-  // 写黑板: gear=D, speed_cmd_mode=1(开始跟车)
-  auto bb = config().blackboard;
-  setBBSpeedCmd(bb, 4, 1, 0, 0, 2.0f, 0.5f, 0.5f, 1.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_nav"), "磁导航循迹 %.1f m/s", speed_);
-  return BT::NodeStatus::RUNNING;
-}
-
-BT::NodeStatus NavigateToWaitArea::onRunning()
-{
-  MOCK_CHECK_NODE();
-  if (bbReadInt(config().blackboard, "speed_state") == 3) return BT::NodeStatus::SUCCESS;
-  return BT::NodeStatus::RUNNING;
-}
-
-void NavigateToWaitArea::onHalted()
-{
-  auto bb = config().blackboard;
-  setBBSpeedCmd(bb, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);  // P档+刹车
-}
-
-// ================================================================
-// S4: 间隙定位
-// ================================================================
-WaitForTargetGap::WaitForTargetGap(const std::string& name, const BT::NodeConfig& config)
-  : BT::StatefulActionNode(name, config) {}
-
-BT::NodeStatus WaitForTargetGap::onStart()
-{
-  MOCK_CHECK_NODE();
+  if (auto t = getInput<double>("distance_threshold")) threshold_ = t.value();
   RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
-    "等待目标车厢 ...");
-
+    "检查目标车厢 (distance_threshold=%.2f, <0 则不判断位置)...", threshold_);
   return BT::NodeStatus::RUNNING;
 }
 
-BT::NodeStatus WaitForTargetGap::onRunning()
+BT::NodeStatus CheckTargetCarriage::onRunning()
 {
   MOCK_CHECK_NODE();
   auto bb = config().blackboard;
+
+  // 限流: 目标未到达/距离超阈值 的 RUNNING 日志每 tick 都会打印, 限制为 1 次/秒
+  static auto s_next_log = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  const bool log_ok = (now >= s_next_log);
+  if (log_ok) s_next_log = now + std::chrono::seconds(2);
+
   int task_round = bbReadInt(bb, "task_round");
-  if (task_round < 0) { 
-    RCLCPP_ERROR(rclcpp::get_logger("bt_cips"), "task_round 未初始化: %d", task_round); 
-    return BT::NodeStatus::FAILURE; 
+  if (task_round < 0) {
+    RCLCPP_ERROR(rclcpp::get_logger("bt_cips"), "task_round 未初始化: %d", task_round);
+    return BT::NodeStatus::FAILURE;
   }
+
   int detect_id = bbReadInt(bb, "detect_id", -1);
-  if ( detect_id < -1 ) {
-    // RCLCPP_INFO(rclcpp::get_logger("bt_cips"), "未检测到车厢, detect_id=%d", detect_id);
-    return BT::NodeStatus::RUNNING;
+  if (detect_id < 0 || detect_id == 255) {
+    return BT::NodeStatus::RUNNING;   // 无效值/无检测, 等待
   }
+
   int train_id = bbReadInt(bb, "train_id");
+  double detect_distance = bbReadDouble(bb, "detect_distance", -1.0);
+
+  // ── ID 判断 ──
   if (train_id > detect_id) {
-    RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "目标未到达! detect_id=%d target_gap_id=%d", detect_id, train_id);
+    if (log_ok) {
+      RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "目标未到达! detect_id=%d train_id=%d", detect_id, train_id);
+    }
     return BT::NodeStatus::RUNNING;
-  }
-  if (train_id == detect_id) {
-    RCLCPP_INFO(rclcpp::get_logger("bt_cips"), "已锁定目标车厢! detect_id=%d == target_gap_id=%d", detect_id, train_id);
-    return BT::NodeStatus::SUCCESS;
   }
   if (train_id < detect_id) {
     RCLCPP_WARN(rclcpp::get_logger("bt_cips"), "错失目标! detect_id=%d train_id=%d", detect_id, train_id);
     return BT::NodeStatus::FAILURE;
   }
+
+  // ── detect_id == train_id → 位置判断 ──
+  // threshold < 0 → 不作位置判断, 仅 ID 匹配即成功
+  if (threshold_ < 0.0) {
+    RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
+      "已锁定目标车厢 detect_id=%d == train_id=%d (threshold<0, 不判断位置)", detect_id, train_id);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  double abs_distance = std::abs(detect_distance);
+  if (abs_distance <= threshold_) {
+    RCLCPP_INFO(rclcpp::get_logger("bt_gap"),
+      "已锁定目标车厢且距离在阈值内! detect_id=%d == train_id=%d, |distance|=%.2f <= %.2f",
+      detect_id, train_id, abs_distance, threshold_);
+    return BT::NodeStatus::SUCCESS;
+  }
+  if (log_ok) {
+    RCLCPP_WARN(rclcpp::get_logger("bt_gap"),
+      "距离超阈值! detect_id=%d == train_id=%d, |distance|=%.2f > %.2f",
+      detect_id, train_id, abs_distance, threshold_);
+  }
   return BT::NodeStatus::RUNNING;
 }
 
-void WaitForTargetGap::onHalted()
-{ RCLCPP_WARN(rclcpp::get_logger("bt_waitgap"), "被中断"); }
+void CheckTargetCarriage::onHalted()
+{ RCLCPP_WARN(rclcpp::get_logger("bt_gap"), "被中断"); }
+
+// ================================================================
+// 检查目标位置 (以 coupling_count 索引位置表 + odometry_enu 当前位置比较)
+// ================================================================
+CheckTargetPosition::CheckTargetPosition(const std::string& name, const BT::NodeConfig& config)
+  : BT::StatefulActionNode(name, config) {}
+
+BT::NodeStatus CheckTargetPosition::onStart()
+{
+  MOCK_CHECK_NODE();
+  if (auto t = getInput<double>("tolerance")) tolerance_ = t.value();
+  if (auto t = getInput<double>("timeout")) timeout_ = t.value();
+  if (auto t = getInput<std::string>("position_type")) position_type_ = t.value();
+  start_time_ = rclcpp::Clock().now();
+  RCLCPP_INFO(rclcpp::get_logger("bt_pos"),
+    "检查目标位置: type=%s tolerance=%.2f timeout=%.1f",
+    position_type_.c_str(), tolerance_, timeout_);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus CheckTargetPosition::onRunning()
+{
+  MOCK_CHECK_NODE();
+  auto bb = config().blackboard;
+
+  // 1. 读取 coupling_count (连挂数, 从 1 开始)
+  int cc = bbReadInt(bb, "coupling_count", -1);
+  if (cc < 1) {
+    RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "coupling_count 无效: %d", cc);
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 2. 读取位置表 (bt_executor 载入)
+  std::shared_ptr<std::vector<HookPosition>> positions;
+  {
+    auto a = bb->getAnyLocked("hook_positions");
+    if (!a) {
+      RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "hook_positions 未加载");
+      return BT::NodeStatus::FAILURE;
+    }
+    try { positions = a->cast<std::shared_ptr<std::vector<HookPosition>>>(); }
+    catch (...) {
+      RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "hook_positions 类型转换失败");
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+  if (!positions) return BT::NodeStatus::FAILURE;
+
+  // 3. 按 coupling_count 查找
+  const HookPosition* hp = nullptr;
+  for (const auto& p : *positions) {
+    if (p.coupling_count == cc) { hp = &p; break; }
+  }
+  if (!hp) {
+    RCLCPP_ERROR(rclcpp::get_logger("bt_pos"), "coupling_count=%d 在位置表中不存在", cc);
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 4. 选择 uncouple / wait 目标
+  double tx, ty;
+  if (position_type_ == "wait") {
+    tx = hp->wait_x; ty = hp->wait_y;
+  } else {  // 默认 uncouple
+    tx = hp->uncouple_x; ty = hp->uncouple_y;
+  }
+
+  // 5. 当前位置就绪检查
+  if (!bbReadInt(bb, "odom_enu_ready", 0)) {
+    return BT::NodeStatus::RUNNING;   // 等待 odometry
+  }
+  double cx = bbReadDouble(bb, "odom_enu_x", 0.0);
+  double cy = bbReadDouble(bb, "odom_enu_y", 0.0);
+
+  // 6. 水平欧氏距离
+  double dx = cx - tx, dy = cy - ty;
+  double dist = std::sqrt(dx * dx + dy * dy);
+
+  if (dist <= tolerance_) {
+    RCLCPP_INFO(rclcpp::get_logger("bt_pos"),
+      "到达目标位置! type=%s cc=%d dist=%.3f <= tol=%.3f",
+      position_type_.c_str(), cc, dist, tolerance_);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  // 7. 超时判断
+  if (timeout_ > 0.0) {
+    double elapsed = (rclcpp::Clock().now() - start_time_).seconds();
+    if (elapsed > timeout_) {
+      RCLCPP_WARN(rclcpp::get_logger("bt_pos"),
+        "超时 %.1fs: cc=%d dist=%.3f > tol=%.3f", elapsed, cc, dist, tolerance_);
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
+  return BT::NodeStatus::RUNNING;
+}
+
+void CheckTargetPosition::onHalted()
+{ RCLCPP_WARN(rclcpp::get_logger("bt_pos"), "被中断"); }
 
 
 
@@ -444,38 +548,6 @@ void WaitForTargetGap::onHalted()
 // ================================================================
 BT::NodeStatus GenerateInterceptTrajectory::tick()
 { MOCK_CHECK_NODE(); return BT::NodeStatus::SUCCESS; }
-
-MPCTrackApproach::MPCTrackApproach(const std::string& name, const BT::NodeConfig& config)
-  : BT::StatefulActionNode(name, config) {}
-
-BT::NodeStatus MPCTrackApproach::onStart()
-{
-  MOCK_CHECK_NODE();
-  if (auto t = getInput<double>("timeout")) timeout_ = t.value();
-  start_time_ = rclcpp::Clock().now();
-  // gear=D, ctrl_mode=1 (开始跟车)
-  setBBSpeedCmd(config().blackboard, 4, 1, 0, 0, 3.0f, 0.5f, 0.5f, 1.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_mpc"), "MPC 追车开始");
-  return BT::NodeStatus::RUNNING;
-}
-
-BT::NodeStatus MPCTrackApproach::onRunning()
-{
-  MOCK_CHECK_NODE();
-  if ((rclcpp::Clock().now() - start_time_).seconds() > timeout_) {
-    RCLCPP_WARN(rclcpp::get_logger("bt_mpc"), "MPC 超时");
-    return BT::NodeStatus::FAILURE;
-  }
-  // 读 speed_state: 2=对齐目标 → SUCCESS
-  int st = bbReadInt(config().blackboard, "speed_state");
-  if (st == 2) {
-    if (++consecutive_converged_ >= 3) { RCLCPP_INFO(rclcpp::get_logger("bt_mpc"), "MPC 追车完成"); return BT::NodeStatus::SUCCESS; }
-  } else { consecutive_converged_ = 0; }
-  return BT::NodeStatus::RUNNING;
-}
-
-void MPCTrackApproach::onHalted()
-{ setBBSpeedCmd(config().blackboard, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f); }
 
 BT::NodeStatus IsTrackingErrorWithin::tick()
 {
@@ -546,29 +618,12 @@ BT::NodeStatus IsCoSpeedArmDeployed::tick()
 // ================================================================
 // S8: 微减速贴附
 // ================================================================
-BT::NodeStatus ApplyMicroDeceleration::tick()
-{
-  MOCK_CHECK_NODE();
-  // ctrl_mode=2 (微减速)
-  setBBSpeedCmd(config().blackboard, 4, 2, 0, 0, 0.5f, 0.3f, 0.3f, 1.0f);
-  return BT::NodeStatus::SUCCESS;
-}
-
 BT::NodeStatus CheckAttachmentForce::tick()
 { MOCK_CHECK_NODE(); return BT::NodeStatus::SUCCESS; }
 
 // ================================================================
 // S9: 摘钩
 // ================================================================
-BT::NodeStatus SwitchToNeutralMode::tick()
-{
-  MOCK_CHECK_NODE();
-  // gear=N(3), ctrl_mode=0(刹车)
-  setBBSpeedCmd(config().blackboard, 3, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_uncouple"), "空档从动 gear=N");
-  return BT::NodeStatus::SUCCESS;
-}
-
 BT::NodeStatus SendMechanicalArmCommand::tick()
 {
   MOCK_CHECK_NODE();
@@ -643,10 +698,10 @@ BT::NodeStatus SpeedControlCommand::tick()
   int gear      = getInput<int>("gear").value_or(1);
   int ctrl_mode = getInput<int>("ctrl_mode").value_or(0);
   float position = static_cast<float>(getInput<double>("position").value_or(0.7));
-  float fwd_vel = static_cast<float>(getInput<double>("max_forward_vel").value_or(2.0));
-  float bwd_vel = static_cast<float>(getInput<double>("max_backward_vel").value_or(0.5));
-  float acc     = static_cast<float>(getInput<double>("max_acc").value_or(0.5));
-  float dec     = static_cast<float>(getInput<double>("max_dec").value_or(1.0));
+  float fwd_vel = static_cast<float>(getInput<double>("max_forward_vel").value_or(bbReadDouble(bb, "speed_max_forward_vel", 3.0)));
+  float bwd_vel = static_cast<float>(getInput<double>("max_backward_vel").value_or(bbReadDouble(bb, "speed_max_backward_vel", -1.5)));
+  float acc     = static_cast<float>(getInput<double>("max_acc").value_or(bbReadDouble(bb, "speed_max_acc", 1.5)));
+  float dec     = static_cast<float>(getInput<double>("max_dec").value_or(bbReadDouble(bb, "speed_max_dec", -2.5)));
 
   int target_id     = bbReadInt(bb, "train_id", -1);
   int coupling_count = bbReadInt(bb, "coupling_count", 0);
@@ -710,7 +765,6 @@ BT::NodeStatus NavigateToOrigin::onStart()
 {
   MOCK_CHECK_NODE();
   if (auto m = getInput<std::string>("mode")) mode_ = m.value();
-  // setBBSpeedCmd(config().blackboard, 4, 10, 0, 0, 2.0f, 0.5f, 0.5f, 1.0f);
   RCLCPP_INFO(rclcpp::get_logger("bt_nav"), "返航中...");
   
   return BT::NodeStatus::RUNNING;
@@ -724,7 +778,7 @@ BT::NodeStatus NavigateToOrigin::onRunning()
 }
 
 void NavigateToOrigin::onHalted()
-{ setBBSpeedCmd(config().blackboard, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f); }
+{ /* 方案A: 速度指令由 XML 中的 SpeedControlCommand 发布, 此处不再写黑板 */ }
 
 // ================================================================
 // E_STOP
@@ -753,8 +807,6 @@ BT::NodeStatus IsCollisionRisk::tick()
 BT::NodeStatus EmergencyBrake::tick()
 {
   MOCK_CHECK_NODE();
-  auto bb = config().blackboard;
-  // setBBSpeedCmd(bb, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
   RCLCPP_ERROR(rclcpp::get_logger("bt_estop"), "紧急制动!!!");
   return BT::NodeStatus::SUCCESS;
 }
@@ -920,24 +972,6 @@ void CheckCtrlStatus::onHalted()
   RCLCPP_WARN(rclcpp::get_logger("bt_ctrl"), "被中断");
 }
 
-BT::NodeStatus ApplyParkingBrake::tick()
-{
-  MOCK_CHECK_NODE();
-  auto bb = config().blackboard;
-  setBBSpeedCmd(bb, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_brake"), "驻车制动 → gear=P, ctrl_mode=刹车");
-  return BT::NodeStatus::SUCCESS;
-}
-
-BT::NodeStatus ReleaseParkingBrake::tick()
-{
-  MOCK_CHECK_NODE();
-  auto bb = config().blackboard;
-  setBBSpeedCmd(bb, 4, 1, 0, 0, 2.0f, 0.5f, 0.5f, 1.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_brake"), "解除驻车 → gear=D, ctrl_mode=跟车");
-  return BT::NodeStatus::SUCCESS;
-}
-
 BT::NodeStatus SendArmCommand::tick()
 {
   MOCK_CHECK_NODE();
@@ -1050,34 +1084,6 @@ BT::NodeStatus CheckStaticTargetPose::tick()
   return BT::NodeStatus::SUCCESS;
 }
 
-NavigateToStaticTarget::NavigateToStaticTarget(const std::string& name, const BT::NodeConfig& config)
-  : BT::StatefulActionNode(name, config) {}
-
-BT::NodeStatus NavigateToStaticTarget::onStart()
-{
-  MOCK_CHECK_NODE();
-  if (auto s = getInput<double>("speed")) speed_ = s.value();
-  if (auto t = getInput<double>("timeout")) timeout_ = t.value();
-  start_time_ = rclcpp::Clock().now();
-  // ctrl_mode=10 (前进定速+到点)
-  setBBSpeedCmd(config().blackboard, 4, 10, 0, 0, static_cast<float>(speed_), 0.5f, 0.5f, 1.0f);
-  RCLCPP_INFO(rclcpp::get_logger("bt_nav"), "静态导航 %.1f m/s", speed_);
-  return BT::NodeStatus::RUNNING;
-}
-
-BT::NodeStatus NavigateToStaticTarget::onRunning()
-{
-  MOCK_CHECK_NODE();
-  if ((rclcpp::Clock().now() - start_time_).seconds() > timeout_) return BT::NodeStatus::FAILURE;
-  int st = bbReadInt(config().blackboard, "speed_state");
-  if (st == 3) { if (++consecutive_converged_ >= 3) return BT::NodeStatus::SUCCESS; }
-  else consecutive_converged_ = 0;
-  return BT::NodeStatus::RUNNING;
-}
-
-void NavigateToStaticTarget::onHalted()
-{ setBBSpeedCmd(config().blackboard, 1, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f); }
-
 BT::NodeStatus IsAtTargetPose::tick()
 {
   MOCK_CHECK_NODE();
@@ -1109,13 +1115,12 @@ void RegisterAllNodes(BT::BehaviorTreeFactory& factory, rclcpp::Node::SharedPtr)
   factory.registerNodeType<WaitMechanicalArm>("WaitMechanicalArm");
   // S3
   factory.registerNodeType<MagneticGuideOnline>("MagneticGuideOnline");
-  factory.registerNodeType<NavigateToWaitArea>("NavigateToWaitArea");
   // S4
-  factory.registerNodeType<WaitForTargetGap>("WaitForTargetGap");
+  factory.registerNodeType<CheckTargetCarriage>("CheckTargetCarriage");
+  factory.registerNodeType<CheckTargetPosition>("CheckTargetPosition");
   factory.registerNodeType<ExtractTaskInfo>("ExtractTaskInfo");
   // S5
   factory.registerNodeType<GenerateInterceptTrajectory>("GenerateInterceptTrajectory");
-  factory.registerNodeType<MPCTrackApproach>("MPCTrackApproach");
   factory.registerNodeType<IsTrackingErrorWithin>("IsTrackingErrorWithin");
   factory.registerNodeType<IsTargetInRange>("IsTargetInRange");
   // S6
@@ -1125,10 +1130,8 @@ void RegisterAllNodes(BT::BehaviorTreeFactory& factory, rclcpp::Node::SharedPtr)
   factory.registerNodeType<SendCoSpeedArmCommand>("SendCoSpeedArmCommand");
   factory.registerNodeType<IsCoSpeedArmDeployed>("IsCoSpeedArmDeployed");
   // S8
-  factory.registerNodeType<ApplyMicroDeceleration>("ApplyMicroDeceleration");
   factory.registerNodeType<CheckAttachmentForce>("CheckAttachmentForce");
   // S9
-  factory.registerNodeType<SwitchToNeutralMode>("SwitchToNeutralMode");
   factory.registerNodeType<SendMechanicalArmCommand>("SendMechanicalArmCommand");
   factory.registerNodeType<SendCipsCommand>("SendCipsCommand");
   factory.registerNodeType<IsUncoupled>("IsUncoupled");
@@ -1158,8 +1161,6 @@ void RegisterAllNodes(BT::BehaviorTreeFactory& factory, rclcpp::Node::SharedPtr)
   // 通用
   factory.registerNodeType<SpeedControlCommand>("SpeedControlCommand");
   factory.registerNodeType<CheckCtrlStatus>("CheckCtrlStatus");
-  factory.registerNodeType<ApplyParkingBrake>("ApplyParkingBrake");
-  factory.registerNodeType<ReleaseParkingBrake>("ReleaseParkingBrake");
   factory.registerNodeType<SendArmCommand>("SendArmCommand");
   factory.registerNodeType<WaitStabilization>("WaitStabilization");
   factory.registerNodeType<WaitDelay>("WaitDelay");
@@ -1169,7 +1170,6 @@ void RegisterAllNodes(BT::BehaviorTreeFactory& factory, rclcpp::Node::SharedPtr)
   factory.registerNodeType<IsDynamicMode>("IsDynamicMode");
   // 静态
   factory.registerNodeType<ComputeStaticTargetPose>("ComputeStaticTargetPose");
-  factory.registerNodeType<NavigateToStaticTarget>("NavigateToStaticTarget");
   factory.registerNodeType<IsAtTargetPose>("IsAtTargetPose");
   factory.registerNodeType<CheckStaticTargetPose>("CheckStaticTargetPose");
 }

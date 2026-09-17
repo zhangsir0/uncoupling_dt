@@ -1,0 +1,15 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="attach_decel">
+      <Action ID="ApplyMicroDeceleration" decel_rate="0.05"/>
+      <RetryUntilSuccessful num_attempts="-1">
+        <Condition ID="CheckCoSpeedArm" command="ATTACH"/>
+      </RetryUntilSuccessful>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S9: 空档从动与提钩 (动态模式)
+       ================================================================ -->
+</root>

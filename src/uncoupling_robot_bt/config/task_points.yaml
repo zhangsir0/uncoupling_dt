@@ -1,0 +1,42 @@
+# task_points.yaml
+tasks:
+  1:
+    coupling_count: 1
+    uncouple_distance: 9.0
+    uncouple_point:
+      x: 10.0
+      y: 20.0
+    wait_distance: 29.0
+    wait_point:
+      x: 20.0
+      y: 0.0
+  2:
+    coupling_count: 2
+    uncouple_distance: 16.0
+    uncouple_point:
+      x: 10.0
+      y: 20.0
+    wait_distance: 36.0
+    wait_point:
+      x: 20.0
+      y: 0.0
+  7:
+    coupling_count: 7
+    uncouple_distance: 51.0
+    uncouple_point:
+      x: 15.0
+      y: 25.0
+    wait_distance: 81.0
+    wait_point:
+      x: 25.0
+      y: 5.0
+  20:
+    coupling_count: 20
+    uncouple_distance: 142.0
+    uncouple_point:
+      x: 5.0
+      y: 10.0
+    wait_distance: 180.0
+    wait_point:
+      x: 10.0
+      y: 15.0

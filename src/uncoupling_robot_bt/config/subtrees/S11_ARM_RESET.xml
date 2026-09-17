@@ -1,0 +1,37 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="arm_reset">
+      <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+      <RetryUntilSuccessful num_attempts="-1">
+        <Condition ID="CheckCoSpeedArm" command="RESET"/>
+      </RetryUntilSuccessful>
+      <Script code="remaining_tasks := remaining_tasks - 1; task_round := task_round + 1"/>
+      <Condition ID="CheckRemainingTasks"/>
+      <Action ID="ResetTargetSpeed"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ╔══════════════════════════════════════════════════════════════╗
+     ║            静态摘钩模式 (work_mode=0) 子树                    ║
+     ║            不使用共速臂, 不跟踪移动火车, 不空档从动            ║
+     ╚══════════════════════════════════════════════════════════════╝ -->
+
+  <!-- ================================================================
+       S5_STATIC_ALIGN: 静态对齐 (静态模式)
+
+       火车静止场景: 底盘导航到目标车厢位置对齐,
+       使用 PID 闭环速度控制, 不需要 MPC 动态追车.
+
+       流程:
+         1. 解除驻车制动
+         2. 根据 target_gap_id 计算静态目标位姿
+            → blackboard(target_x, target_y, target_yaw)
+            → bt_executor 桥接到 /pid/target_pose
+         3. PID 闭环控制: NavigateToStaticTarget 设置 pid_enable=true
+            → bt_executor 桥接到 /pid/enable → PID 控制器激活
+            → PID 发布 /cmd_vel, /pid/status
+            → 收敛后 /pid/status="CONVERGED" → 黑板 pid_status → SUCCESS
+         4. 确认到达 (位置误差 < tolerance)
+       ================================================================ -->
+</root>

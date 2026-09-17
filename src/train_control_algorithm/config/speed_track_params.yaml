@@ -9,8 +9,8 @@ speed_track_node:
   ros__parameters:
 
     # ── 位置环 PID ──
-    k_p_pos: 0.3
-    k_i_pos: 0.04
+    k_p_pos: 0.5
+    k_i_pos: 0.05
     k_d_pos: 0.05
 
     # ── 限幅（默认值，可被 SpeedCommand 动态覆盖）──
@@ -26,14 +26,14 @@ speed_track_node:
     brake_value: 50
 
     # ── 跟车稳定性判定 ──
-    stable_pos_threshold: 0.1
-    stable_vel_threshold: 0.1
-    stable_duration: 3.0
+    stable_pos_threshold: 0.15
+    stable_vel_threshold: 0.2
+    stable_duration: 2.0
 
     # ── mode12 前往固定位置(wait 点) ──
     # task_points.yaml 由工程师提供，coupling_count → wait_distance(到驼峰原点距离,m)
-    task_points_file: ""            # 例: /path/to/config/task_points.yaml
-    fix_arrival_threshold: 0.15     # 到达判定距离阈值 (m)
+    task_points_file: "/home/sz/workspace/src/train_control_algorithm/config/task_points.yaml"            # 例: /path/to/config/task_points.yaml
+    fix_arrival_threshold: 0.5     # 到达判定距离阈值 (m)
     fix_arrival_duration: 2.0       # 到达稳定时长 (s)
     fix_origin_x: 0.0               # 驼峰原点在 fixposition ENU 的 x 偏移 (m)
     fix_origin_y: 0.0               # 驼峰原点在 fixposition ENU 的 y 偏移 (m)

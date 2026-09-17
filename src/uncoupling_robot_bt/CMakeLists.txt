@@ -53,6 +53,7 @@ ament_target_dependencies(bt_executor_node
   rclcpp
   behaviortree_cpp
   std_msgs
+  nav_msgs
   data_interfaces
 )
 

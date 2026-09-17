@@ -1,0 +1,39 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="static_align">
+      <!-- 1. 解除驻车: MPC 不使用, 由 NavigateToStaticTarget 直接控制底盘 -->
+      <Action ID="ReleaseParkingBrake"/>
+
+      <!-- 2. 根据 target_gap_id 查表计算静态火车车厢的目标位姿
+             输入:  blackboard("target_gap_id") — S1 ParseTaskMessage 写入
+             输出:  blackboard("target_x"), ("target_y"), ("target_yaw") — 导航目标 -->
+      <Action ID="ComputeStaticTargetPose" target_gap_id="{target_gap_id}"/>
+
+      <!-- 3. PID 闭环速度控制
+             NavigateToStaticTarget 设置 pid_enable=true → bt_executor → /pid/enable
+             PID 控制器订阅 /pid/target_pose + odom → 计算 → 发布 /cmd_vel
+             收敛后 PID 控制器发布 /pid/status="CONVERGED"
+             → bt_executor → blackboard(pid_status) → BT 节点检测到 → SUCCESS -->
+      <Action ID="NavigateToStaticTarget" speed="1.0" timeout="10.0"/>
+
+      <!-- 4. 确认到达目标位姿, 默认容差 5cm -->
+      <Condition ID="IsAtTargetPose" tolerance="0.05"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S9_STATIC_UNCOUPLE: 静态摘钩 — 纯机械臂操作 (静态模式)
+
+       与动态 S9_UNCOUPLE 的区别:
+         - 无 SwitchToNeutralMode  — 火车静止, 不需要空档从动
+         - 无 ResetTargetSpeed     — 不需要跟踪移动火车的速度
+         - 无 DEMAGNETIZE          — 无共速臂磁吸, 不需要退磁
+         - 无 RetractCoSpeedArm    — 不使用共速臂
+
+       流程:
+         1. SendMechanicalArmCommand(START_WORK) — 唤醒机械臂
+         2. CheckMechanicalArm(ISOK) — 轮询等待提钩完成 
+         3. SendMechanicalArmCommand(RESET) — 机械臂回收
+       ================================================================ -->
+</root>

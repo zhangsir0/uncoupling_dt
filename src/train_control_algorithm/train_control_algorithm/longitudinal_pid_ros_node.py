@@ -230,7 +230,7 @@ class SpeedTrackNode(Node):
         self._decl("max_accel", default=1.5,  min=0.1,  max=10.0, step=0.1, desc="最大加速度 (m/s²)")
         self._decl("max_decel", default=-2.0, min=-10.0, max=-0.1, step=0.1, desc="最大减速度 (m/s²)，负值")
         self._decl("max_speed", default=5.0,  min=0.1,  max=20.0, step=0.1, desc="最大输出速度 (m/s)")
-        self._decl("min_speed", default=-1.0, min=-20.0, max=-0.1, step=0.1, desc="最小输出速度 (m/s)，负值")
+        self._decl("min_speed", default=-1.5, min=-20.0, max=-0.1, step=0.1, desc="最小输出速度 (m/s)，负值")
 
         # ── 业务参数 ──
         self._decl("task2_vel_offset",   default=-0.0, min=-2.0, max=0.0,  step=0.05, desc="微减速偏移 (m/s)")
@@ -246,12 +246,12 @@ class SpeedTrackNode(Node):
         # ── 巡航定点快速收敛 ──
         self._decl("cruise_pos_threshold", default=0.15, min=0.01, max=1.0, step=0.01, desc="模式10/11 位置接近阈值 (m)")
         self._decl("cruise_vel_threshold", default=0.5,  min=0.01, max=2.0, step=0.01, desc="模式10/11 速度接近阈值 (m/s)")
-        self._decl("_integral_pos_error_limit", default=2.0, min=0.0,  max=100.0, step=1.0, desc="位置积分饱和上限 ")
+        self._decl("_integral_pos_error_limit", default=3.0, min=0.0,  max=100.0, step=1.0, desc="位置积分饱和上限 ")
         self.declare_parameter("use_speed_feedforward", True,
             ParameterDescriptor(description="是否启用速度前馈（target_speed = ego + rel_vel）。"
                                             "当感知速度有延迟/不准确时建议关闭。"))
         self._decl("feedforward_window", default=3.0,  min=0.5,  max=10.0, step=0.5, desc="前馈速度滑动平均窗口 (s)")
-        self._decl("feedforward_weight", default=0.8,  min=0.0,  max=1.0,  step=0.01, desc="前馈速度权重 (0=纯PID, 1=全前馈)")
+        self._decl("feedforward_weight", default=0.9,  min=0.0,  max=1.0,  step=0.01, desc="前馈速度权重 (0=纯PID, 1=全前馈)")
 
         # ── mode12 前往固定位置(wait 点) ──
         self.declare_parameter("task_points_file", "",
@@ -306,23 +306,52 @@ class SpeedTrackNode(Node):
     # 动态限幅 — 由 SpeedCommand 注入
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _apply_speed_command_limits(self):
-        """将 SpeedCommand 中的速度/加速度限制推入 PID 控制器。
+    def _baseline_limits(self) -> dict:
+        """默认(保底)限幅 = 节点自身参数；SpeedCommand 只能收紧、不能越界。"""
+        return {
+            "max_accel": self.get_parameter("max_accel").value,
+            "max_decel": self.get_parameter("max_decel").value,
+            "max_speed": self.get_parameter("max_speed").value,
+            "min_speed": self.get_parameter("min_speed").value,
+        }
 
-        SpeedCommand 中的值为 0 时视为未指定，不覆盖。
+    def _apply_speed_command_limits(self) -> dict:
+        """将 SpeedCommand 四限幅与默认(保底)限幅比较后推入控制器。
+
+        判别逻辑（默认=安全上限，指令只能收紧）：
+          正字段(max_forward_vel/max_acc)   : cmd>0 → min(cmd,默认)；cmd<0 符号错 → 默认；cmd==0 → 保留上次
+          负字段(max_backward_vel/max_dec) : cmd<0 → max(cmd,默认)；cmd>0 符号错 → 默认；cmd==0 → 保留上次
+        返回 {参数名: (旧值, 新值)}，供 Mode switch 日志打印。
         """
+        base = self._baseline_limits()
         updates = {}
-        if self.cmd_max_acc > 0:
-            updates["max_accel"] = self.cmd_max_acc
-        if self.cmd_max_dec < 0:
-            updates["max_decel"] = self.cmd_max_dec
+
         if self.cmd_max_forward_vel > 0:
-            updates["max_speed"] = self.cmd_max_forward_vel
+            updates["max_speed"] = min(self.cmd_max_forward_vel, base["max_speed"])
+        elif self.cmd_max_forward_vel < 0:
+            updates["max_speed"] = base["max_speed"]          # 符号错 → 回落默认
+
         if self.cmd_max_backward_vel < 0:
-            updates["min_speed"] = self.cmd_max_backward_vel
+            updates["min_speed"] = max(self.cmd_max_backward_vel, base["min_speed"])
+        elif self.cmd_max_backward_vel > 0:
+            updates["min_speed"] = base["min_speed"]          # 符号错 → 回落默认
+
+        if self.cmd_max_acc > 0:
+            updates["max_accel"] = min(self.cmd_max_acc, base["max_accel"])
+        elif self.cmd_max_acc < 0:
+            updates["max_accel"] = base["max_accel"]          # 符号错 → 回落默认
+
+        if self.cmd_max_dec < 0:
+            updates["max_decel"] = max(self.cmd_max_dec, base["max_decel"])
+        elif self.cmd_max_dec > 0:
+            updates["max_decel"] = base["max_decel"]          # 符号错 → 回落默认
+
+        changes = {k: (getattr(self.controller, k), v) for k, v in updates.items()
+                   if abs(getattr(self.controller, k) - v) > 1e-9}
         if updates:
             self.controller.update_params(**updates)
             self.get_logger().debug(f"SpeedCommand limits applied: {updates}")
+        return changes
 
     # ═══════════════════════════════════════════════════════════════════════
     # 订阅回调
@@ -353,7 +382,11 @@ class SpeedTrackNode(Node):
             self._lookup_wait_point(msg.coupling_count)
             if new_mode == self.current_mode:
                 # 仅更新了目标距离/限幅，不重置控制器、不切换
-                self._apply_speed_command_limits()
+                limit_changes = self._apply_speed_command_limits()
+                if limit_changes:
+                    lim_str = ", ".join(
+                        f"{k} {old:+.2f}→{new:+.2f}" for k, (old, new) in limit_changes.items())
+                    self.get_logger().info(f"Mode 12 limits update: {lim_str}")
                 return
 
         if new_mode == self.current_mode:
@@ -361,8 +394,6 @@ class SpeedTrackNode(Node):
 
         if new_mode in (0, 1, 2, 3, 4, 10, 11, 12):
             prev_mode = self.current_mode
-            self.get_logger().info(
-                f"Mode switch: {prev_mode} → {new_mode}")
             self.current_mode = new_mode
             # 模式 1/2/3 之间切换时保留积分项和控制器状态
             # （仍在跟踪同一车厢，仅控制策略微调，积分清零会导致速度突变）
@@ -375,9 +406,14 @@ class SpeedTrackNode(Node):
                 self._cruise_approaching = False
                 self._fix_arrive_since = None
                 self._mode12_chase_frames = 0
-            # 动态限幅仅对跟车/定点模式生效，巡航模式使用固定速度值(task10/11)
-            if new_mode in (1, 2, 3, 12):
-                self._apply_speed_command_limits()
+            # 动态限幅：跟车/定点/巡航模式(1,2,3,10,11,12)均应用，并与默认(保底)比较
+            limit_changes = {}
+            if new_mode in (1, 2, 3, 10, 11, 12):
+                limit_changes = self._apply_speed_command_limits()
+            lim_str = ", ".join(
+                f"{k} {old:+.2f}→{new:+.2f}" for k, (old, new) in limit_changes.items()
+            ) or "limits unchanged"
+            self.get_logger().info(f"Mode switch: {prev_mode} → {new_mode} | {lim_str}")
         else:
             self.get_logger().warn(
                 f"Received invalid ctrl_mode: {new_mode} (valid: 0,1,2,3,4,10,11,12), ignored")
@@ -508,7 +544,7 @@ class SpeedTrackNode(Node):
             return 0.0, brake, 3
 
         dist_ego = self._dist_from_origin()
-        pos_err = self.fix_dist - dist_ego
+        pos_err = -(self.fix_dist - dist_ego)
 
         # ── 2. 追车抢占：目标出现（感知 current_id == 行为树 target_id）连续 3 帧 ──
         detect_fresh = (time.time() - self._detect_time) < 0.5
@@ -716,7 +752,7 @@ class SpeedTrackNode(Node):
     # 模式 1: 跟车 PID 计算
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _compute_mode1_follow(self, dt, allow_reverse: bool = False):
+    def _compute_mode1_follow(self, dt, allow_reverse: bool = True):
         """计算跟车模式的速度指令。
 
         控制律: speed_cmd = target_speed + position_PID(position_error)
@@ -871,7 +907,9 @@ class SpeedTrackNode(Node):
                 f"tgt_spd={dbg.get('target_speed', 0):+.3f} m/s | "
                 f"ff={'ON' if self.use_speed_feedforward else 'OFF'} "
                 f"w={self.feedforward_weight:.2f} | "
-                f"vel_err={self.relative_velocity:+.3f} m/s | "
+                # f"vel_err={self.relative_velocity:+.3f} m/s | "
+                f"raw_cmd={dbg.get('raw_cmd', 0):+.3f} m/s | "
+                f"limited_cmd={dbg.get('limited_cmd', 0):+.3f} m/s | "
                 f"vel_spd={ctrl_speed:+.3f} m/s | "
                 f"state={state_names.get(speed_state, '?')}({speed_state})"
             )

@@ -1,0 +1,25 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="nav_to_wait_area">
+      <Action ID="ReleaseParkingBrake"/>
+      <Fallback name="nav_with_guard">
+        <Sequence>
+          <Condition ID="MagneticGuideOnline"/>
+          <Inverter>
+            <Condition ID="IsAtPositionLimit"/>
+          </Inverter>
+          <Inverter>
+            <Condition ID="IsHeartbeatLost"/>
+          </Inverter>
+        </Sequence>
+        <Action ID="NavigateToWaitArea" speed="0.5" mode="magnetic_guide"/>
+      </Fallback>
+      <Action ID="ApplyParkingBrake"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S4: 占位等待 (同原版)
+       ================================================================ -->
+</root>

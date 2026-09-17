@@ -1,0 +1,25 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Fallback name="lock_target_with_fault_handler">
+      <Sequence name="target_positioning">
+
+        <Action ID="CheckTargetCarriage" distance_threshold="0.9"/>
+      </Sequence>
+      <Sequence name="lock_failure_handler">
+        <Action ID="ReportFault" fault_code="LOCK_TARGET_FAILED"/>
+        <Action ID="ApplyParkingBrake"/>
+        <Action ID="WaitForManualReset"/>
+      </Sequence>
+    </Fallback>
+  </BehaviorTree>
+
+
+  <!-- ╔══════════════════════════════════════════════════════════════╗
+     ║            动态摘钩模式 (work_mode=1) 子树                    ║
+     ║            以下 S5~S11 与原版 uncoupling_robot_bt.xml 完全一致 ║
+     ╚══════════════════════════════════════════════════════════════╝ -->
+
+  <!-- ================================================================
+       S5: MPC 动态追车与对齐 (动态模式)
+       ================================================================ -->
+</root>

@@ -542,6 +542,13 @@ void ChassisArbitrationNode::applyL2Override(ArbitrationResult & result)
     result.brake    = ctrl_hmi_msg_->ctrl_break;
     result.active_level  = 2;
     result.active_source = "hmi_manual";
+  } else if (ctrl_hmi_msg_->hmi_ctrl_mode == 3) {
+    // ── 空档驻停 (HMI mode=3): N 档 + 速度 0 + 松刹车 ──
+    result.gear     = 3;   // N 档
+    result.velocity = 0.0f;
+    result.brake    = 0;
+    result.active_level  = 2;
+    result.active_source = "hmi_neutral";
   }
 }
 

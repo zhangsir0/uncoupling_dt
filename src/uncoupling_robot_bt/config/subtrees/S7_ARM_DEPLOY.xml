@@ -1,0 +1,17 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="arm_deploy">
+      <Condition ID="IsStabilized" timeout="2000"/>
+      <Action ID="SendCoSpeedArmCommand" command="DEPLOY"/>
+      <Action ID="SendCoSpeedArmCommand" command="SET_CAR_TYPE"/>
+      <RetryUntilSuccessful num_attempts="-1">
+        <Condition ID="CheckCoSpeedArm" command="DEPLOY"/>
+      </RetryUntilSuccessful>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S8: 微减速贴附 (动态模式)
+       ================================================================ -->
+</root>

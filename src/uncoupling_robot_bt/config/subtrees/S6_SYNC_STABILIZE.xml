@@ -1,0 +1,24 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="sync_stabilize">
+      <Action ID="SetMPCWeights" speed_weight="{w_v_low}" position_weight="{w_x_high}"/>
+      <Fallback name="stabilize_branches">
+        <Sequence name="branch_before_work">
+          <Condition ID="IsBeforeWork"/>
+          <Action ID="WaitStabilization" timeout="2000"/>
+        </Sequence>
+        <Sequence name="branch_after_work">
+          <Inverter>
+            <Condition ID="IsBeforeWork"/>
+          </Inverter>
+          <Action ID="RetractCoSpeedArm"/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S7: 共速臂展开 (动态模式)
+       ================================================================ -->
+</root>

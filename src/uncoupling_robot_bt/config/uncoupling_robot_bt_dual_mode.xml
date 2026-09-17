@@ -18,6 +18,12 @@
            resume 在 ReactiveFallback 内部失效, 导致 RUNNING 节点卡死
 
        ================================================================ -->
+
+  <!-- SpeedControlCommand 限幅字段符号约定:
+       max_forward_vel > 0 (前进)    max_backward_vel < 0 (后退, 必须为负值)
+       max_acc         > 0 (加速)    max_dec         < 0 (减速, 必须为负值)
+       默认值在 main_flow 顶部 Script 一次性写入黑板 (speed_max_forward_vel 等),
+       节点缺省某字段时回退到该黑板默认值. -->
   <BehaviorTree ID="MainTree">
     <Fallback name="global_estop_monitor">
 
@@ -54,6 +60,8 @@
       <!-- ── 第二分支: 主流程 ───
            仅在 E_STOP 未触发时执行 -->
       <Sequence name="main_flow">
+        <!-- 一次性写入 /speed_command 限幅默认值 (SpeedControlCommand 字段缺失时回退到这些黑板默认) -->
+        <Script code="speed_max_forward_vel := 3.0; speed_max_backward_vel := -1.5; speed_max_acc := 1.5; speed_max_dec := -2.5"/>
         <SubTree ID="S0_INIT" _autoremap="true"/>
 
         <!-- 外层循环: S1→S13 永久循环
@@ -66,9 +74,12 @@
             <!-- 内层循环: S2→S10 (单钩执行, 有后续任务则循环回 S2)
                 RetryUntilSuccessful: child FAILURE→重试(循环), child SUCCESS→退出至S13
                 CheckRemainingTasks: remaining>0→FAILURE(循环), remaining==0→SUCCESS(退出至S13) -->
-            <ForceSuccess>
-              <RetryUntilSuccessful num_attempts="{cips_total_hook_num}">
+
+            <RetryUntilSuccessful num_attempts="-1">
+              <Fallback>
                 <Sequence name="SingleHookExecutionFlow">
+                  <Action ID="SpeedControlCommand" gear="3" ctrl_mode="0" />
+
                   <SubTree ID="S2_ARM_CHECK" _autoremap="true"/>
                   <!-- 工作模式分支: 静态摘钩 vs 动态摘钩
 
@@ -85,9 +96,24 @@
                     <!-- ── 动态摘钩模式 (work_mode=1) -->
                     <Sequence name="dynamic_mode_flow">
                       <Condition ID="IsDynamicMode"/>
-                      <SubTree ID="S3_NAV_WAIT_AREA" _autoremap="true"/>
+                      <!-- <SubTree ID="S3_NAV_WAIT_AREA" _autoremap="true"/> -->
+
+                      <!-- 根据竞速结果分发: 目标先到→S5; 位置先到→S4→S5 -->
+                      <!-- <Fallback name="post_race_dispatcher">
+                        <Sequence name="target_first_flow">
+                          <ScriptCondition code="race_result == 'target'"/>
+                          <SubTree ID="S5_TRACK_APPROACH" _autoremap="true"/>
+                        </Sequence>
+                        <Sequence name="position_first_flow">
+                          <ScriptCondition code="race_result == 'position'"/>
+                          <SubTree ID="S4_TARGET_POSITIONING" _autoremap="true"/>
+                          <SubTree ID="S5_TRACK_APPROACH" _autoremap="true"/>
+                        </Sequence>
+                      </Fallback> -->
+
                       <SubTree ID="S4_TARGET_POSITIONING" _autoremap="true"/>
                       <SubTree ID="S5_TRACK_APPROACH" _autoremap="true"/>
+
                       <SubTree ID="S6_COARM_DEPLOY" _autoremap="true"/>
                       <SubTree ID="S7_ATTACH_DECEL" _autoremap="true"/>
                       <SubTree ID="S8_UNCOUPLE" _autoremap="true"/>
@@ -101,10 +127,12 @@
                       <SubTree ID="S12_STATIC_HOOKING" _autoremap="true"/>
                     </Sequence>
                   </Fallback>
-                  
+                  <Action ID="ReportInfo" info_code="检查剩余任务"/>
+                  <Condition ID="CheckRemainingTasks"/>
                 </Sequence>
-              </RetryUntilSuccessful>
-            </ForceSuccess>
+                <Condition ID="CheckRemainingTasks"/>
+              </Fallback>
+            </RetryUntilSuccessful>
 
             <SubTree ID="S13_RETURN_HOME" _autoremap="true"/>
             <ForceFailure>
@@ -134,7 +162,7 @@
   <BehaviorTree ID="S1_IDLE">
     <Sequence name="idle_standby">
       <!-- <Action ID="ApplyParkingBrake"/> -->
-      <Action ID="SpeedControlCommand" gear="1" ctrl_mode="20" />
+      <Action ID="SpeedControlCommand" gear="1" ctrl_mode="0" />
       <Fallback name="battery_check">
         <Condition ID="IsBatteryNormal"/>
         <Sequence name="low_battery_standby">
@@ -168,14 +196,14 @@
       </Fallback>
 
       <!-- 机械臂(arm) Home 位检查 -->
-      <!-- <Fallback name="arm_home_check">
+      <Fallback name="arm_home_check">
         <Condition ID="CheckMechanicalArm" command="HOME"/>
         <Sequence name="arm_reset_sequence">
           <Action ID="SendMechanicalArmCommand" command="RESET"/>
           <Action ID="SendMechanicalArmCommand" command="AUTO_MODE"/>
           <WaitMechanicalArm command="HOME" timeout="-1"/>
         </Sequence>
-      </Fallback> -->
+      </Fallback>
 
     </Parallel>
   </BehaviorTree>
@@ -184,9 +212,19 @@
   <!--  S3: 前往待位区  -->
   <BehaviorTree ID="S3_NAV_WAIT_AREA">
     <Sequence name="nav_to_wait_area">
-      <Action ID="SpeedControlCommand" gear="4" ctrl_mode="20"/>
+      <Action ID="SpeedControlCommand" gear="4" ctrl_mode="12"/>
       <!-- <Action ID="NavigateToWaitArea" speed="0.5" mode="magnetic_guide"/> -->
-      <Action ID="SpeedControlCommand" gear="4" ctrl_mode="0"/>
+      <!-- 竞速检测: 同时检测"目标到来"与"到达等待位置", 任一先达成即退出 -->
+      <!-- <Parallel name="target_position_race">
+        <Sequence name="target_arrived_branch">
+          <Action ID="CheckTargetCarriage" distance_threshold="2"/>
+          <Script code="race_result := 'target'"/>
+        </Sequence>
+        <Sequence name="position_reached_branch">
+          <Action ID="CheckTargetPosition" position_type="wait" tolerance="0.5" timeout="-1"/>
+          <Script code="race_result := 'position'"/>
+        </Sequence>
+      </Parallel> -->
     </Sequence>
   </BehaviorTree>
 
@@ -195,8 +233,10 @@
   <BehaviorTree ID="S4_TARGET_POSITIONING">
     <Fallback name="lock_target_with_fault_handler">
       <Sequence name="lock_target">
-        <Action ID="SpeedControlCommand" gear="4" ctrl_mode="0" />
-        <Action ID="WaitForTargetGap"/>
+        <Action ID="SpeedControlCommand" gear="4" ctrl_mode="12"/>
+
+        <!-- <Action ID="SpeedControlCommand" gear="4" ctrl_mode="0" /> -->
+        <Action ID="CheckTargetCarriage" distance_threshold="2"/>
       </Sequence>
       <Sequence name="lock_failure_handler">
         <Action ID="SpeedControlCommand" gear="1" ctrl_mode="0"/>
@@ -228,25 +268,25 @@
   <!--   S6: 共速臂展开 (动态模式) -->
   <BehaviorTree ID="S6_COARM_DEPLOY">
     <Sequence name="arm_deploy">
-      <RetryUntilSuccessful num_attempts="-1">
         <Fallback>
           <!-- 正常路径: 所有节点成功 → SUCCESS → 退出循环 -->
           <Sequence>
-            <Action ID="CheckCtrlStatus" command="2" timeout="90"/>
+            <Action ID="CheckCtrlStatus" command="2" timeout="120"/>
             <Action ID="ReportInfo" info_code="共速成功，准备伸出共速臂"/>
             <Action ID="SendCoSpeedArmCommand" command="DEPLOY"/>
             <Action ID="SendCoSpeedArmCommand" command="SET_CAR_TYPE"/>
             <WaitCoSpeedArm command="DEPLOY" timeout="-1"/>
           </Sequence>
           <!-- 恢复路径: 任一节点失败 → 复位 → ForceFailure → 回到 CheckCtrlStatus -->
-          <Sequence>
-            <Action ID="SendMechanicalArmCommand" command="RESET"/>
+          <Sequence name="co_arm_deploy_failure_handler">
+            <Action ID="SendCoSpeedArmCommand" command="RESET"/>
+            <WaitCoSpeedArm command="RESET" timeout="-1"/>
+            <Action ID="ReportInfo" info_code="共速臂复位完成，重新尝试伸出共速臂"/>
             <ForceFailure>
               <AlwaysSuccess/>
             </ForceFailure>
           </Sequence>
         </Fallback>
-      </RetryUntilSuccessful>
     </Sequence>
   </BehaviorTree>
 
@@ -256,9 +296,7 @@
     <Sequence name="attach_decel">
       <Action ID="SpeedControlCommand" gear="4" ctrl_mode="2" position="0.95"/>
       <Action ID="ReportInfo" info_code="共速臂已展开，开始减速贴附"/>
-      <RetryUntilSuccessful num_attempts="-1">
-        <WaitCoSpeedArm command="ATTACH" timeout="-1"/>
-      </RetryUntilSuccessful>
+      <WaitCoSpeedArm command="ATTACH" timeout="-1"/>
       <Action ID="ReportInfo" info_code="共速臂已贴附车厢，准备提钩"/>
       <!-- <Action ID="SpeedControlCommand" gear="3" ctrl_mode="3" position="0.7"/> -->
     </Sequence>
@@ -269,12 +307,12 @@
   <BehaviorTree ID="S8_UNCOUPLE">
     <Sequence name="uncouple">
       <Action ID="SpeedControlCommand" gear="3" ctrl_mode="2" position="0.95"/>
-      <WaitDelay delay_s="0.2"/>
-      <!-- <Action ID="SendMechanicalArmCommand" command="DEPLOY"/>
+      <WaitDelay delay_s="2"/>
+      <Action ID="SendMechanicalArmCommand" command="DEPLOY"/>
       <WaitMechanicalArm command="ISOK" timeout="-1"/>
       <Action ID="ReportInfo" info_code="机械臂提钩作业结束"/>
       <Action ID="SendMechanicalArmCommand" command="RESET"/>
-      <WaitMechanicalArm command="RESET" timeout="-1"/> -->
+      <WaitMechanicalArm command="RESET" timeout="-1"/>
       <WaitDelay delay_s="1"/>
       <Action ID="ReportInfo" info_code="机械臂复位完成，共速臂准备复位"/>
     </Sequence>
@@ -284,14 +322,13 @@
   <BehaviorTree ID="S9_RE_SYNC">
     <Sequence name="retrack">
       <Action ID="SendCoSpeedArmCommand" command="DEMAGNETIZE"/>
-      <WaitDelay delay_s="0.1"/>
+      <WaitDelay delay_s="1"/>
       <Fallback>
         <Sequence name="retrack_approach">
           <Action ID="SpeedControlCommand" gear="4" ctrl_mode="3" position="0.7"/>
-          <WaitDelay delay_s="0.2"/>
-          <Action ID="CheckCtrlStatus" command="2" timeout="60"/>
+          <Action ID="CheckCtrlStatus" command="2" timeout="20"/>
         </Sequence>
-        <Action ID="CheckCtrlStatus" command="2" timeout="60"/>
+        <Action ID="CheckCtrlStatus" command="2" timeout="20"/>
         <Sequence name="retrack_failure_handler">
           <Action ID="SpeedControlCommand" gear="4" ctrl_mode="4"/>
           <Action ID="ReportFault" fault_code="重新共速失败"/>
@@ -311,8 +348,6 @@
       <RetryUntilSuccessful num_attempts="-1">
         <Condition ID="CheckCtrlStatus" command="3"/>
       </RetryUntilSuccessful>
-      <Action ID="ReportInfo" info_code="检查剩余任务"/>
-      <Condition ID="CheckRemainingTasks"/>
     </Sequence>
   </BehaviorTree>
 

@@ -16,6 +16,8 @@
     - 首先反馈项会使得位置收敛，然后再将速度收敛到前馈速度
 """
 
+import math
+
 
 class LongitudinalPIDController:
     """纵向位置 PID 控制器（位置环 + 加速度/速度限幅）。
@@ -111,7 +113,6 @@ class LongitudinalPIDController:
 
         # 4. 最终限幅 [min_speed, max_speed]
         speed_cmd = max(self.min_speed, min(self.max_speed, limited_cmd))
-
         # ── 存储调试信息（不改控制逻辑，只供外部读取） ──
         self._debug = {
             "target_speed": target_speed,
@@ -206,24 +207,34 @@ class LongitudinalPIDController:
 
 
     def _apply_acceleration_limit(self, current_speed, desired_speed, dt):
-        """对速度指令施加加速度/减速度限制，限制计算出的速度指令的加速度在 [max_accel, max_decel] 内"""
+        """对速度指令施加加速度/减速度限制。
+
+        按 |速度| 幅值变化率判断（与方向无关）：
+          - |v| 增大 → 加速，受 max_accel 限制
+          - |v| 减小 → 减速，受 max_decel 限制
+        方向由 desired_speed 的符号决定（倒车减速到 0 同样算减速）。
+        """
         # 首次调用时用当前速度初始化历史值，避免冷启动跳变。
         if not self._accel_initialized:
             self.prev_cmd_speed = current_speed
             self._accel_initialized = True
 
-        if dt > 0:
-            accel = (desired_speed - self.prev_cmd_speed) / dt
+        if dt <= 0:
+            self.prev_cmd_speed = desired_speed
+            return desired_speed
 
-            if accel > self.max_accel:
-                limited = self.prev_cmd_speed + self.max_accel * dt
-            elif accel < self.max_decel:
-                limited = self.prev_cmd_speed + self.max_decel * dt
-            else:
-                limited = desired_speed
+        prev_mag = abs(self.prev_cmd_speed)
+        desired_mag = abs(desired_speed)
+        mag_rate = (desired_mag - prev_mag) / dt  # >0 加速, <0 减速
+
+        if mag_rate > self.max_accel:              # 加速过快
+            limited_mag = prev_mag + self.max_accel * dt
+        elif mag_rate < self.max_decel:            # 减速过快 (max_decel<0)
+            limited_mag = max(prev_mag + self.max_decel * dt, 0.0)
         else:
-            limited = desired_speed
+            limited_mag = desired_mag
 
+        limited = math.copysign(limited_mag, desired_speed)
         self.prev_cmd_speed = limited
         return limited
 

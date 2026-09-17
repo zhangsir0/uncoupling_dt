@@ -200,46 +200,60 @@ public:
   static BT::PortsList providedPorts() { return {}; }
 };
 
-class NavigateToWaitArea : public BT::StatefulActionNode
+// ╔══════════════════════════════════════════════════════════════╗
+// ║            S4: 占位等待 — 雷达间隙计数                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+// ── 检查目标车厢: ID 判断 (detect_id == train_id) + 距离阈值判断 ──
+// detect_id == train_id 且 |detect_distance| <= threshold → SUCCESS (进入阈值)
+// detect_id == train_id 且 |detect_distance| >  threshold → FAILURE (距离超阈值)
+// threshold < 0 时不作位置判断 (仅 ID 判断)
+// detect_id == 255 (无效值/无检测) → RUNNING
+class CheckTargetCarriage : public BT::StatefulActionNode
 {
 public:
-  NavigateToWaitArea(const std::string& n, const BT::NodeConfig& c);
+  CheckTargetCarriage(const std::string& n, const BT::NodeConfig& c);
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+  static BT::PortsList providedPorts()
+  { return { BT::InputPort<double>("distance_threshold", 0.9, "目标距离阈值(m), detect_distance <= 阈值即锁定") }; }
+private:
+  double threshold_ = 0.9;
+};
+
+// ── 摘钩作业位置 (对应 config/hook_positions.csv 一行) ──
+// 由 bt_executor 启动时解析 CSV 载入黑板 (key: hook_positions)
+struct HookPosition
+{
+  int    coupling_count = 0;   // 连挂数 (从 1 开始)
+  double uncouple_x = 0.0;     // 摘钩位置 x (ENU)
+  double uncouple_y = 0.0;     // 摘钩位置 y (ENU)
+  double wait_x = 0.0;         // 等待位置 x (ENU)
+  double wait_y = 0.0;         // 等待位置 y (ENU)
+};
+
+// ── 检查目标位置: 以 coupling_count 索引位置表, 与 odometry_enu 当前位置比较 ──
+// position_type = "uncouple"(摘钩位置) / "wait"(等待位置)
+// 水平欧氏距离 dist <= tolerance → SUCCESS; 超时 → FAILURE; 否则 RUNNING
+class CheckTargetPosition : public BT::StatefulActionNode
+{
+public:
+  CheckTargetPosition(const std::string& n, const BT::NodeConfig& c);
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
   static BT::PortsList providedPorts()
   { return {
-      BT::InputPort<double>("speed", 1.0, "行进速度 m/s"),
-      BT::InputPort<std::string>("mode", "magnetic_guide", "导航模式")
+      BT::InputPort<double>("tolerance", 0.05, "容差半径(m), 水平欧氏距离"),
+      BT::InputPort<double>("timeout", -1.0, "超时秒数, -1=无限"),
+      BT::InputPort<std::string>("position_type", "uncouple", "uncouple=摘钩位置 / wait=等待位置"),
   };}
 private:
-  double speed_ = 1.0;
-  std::string mode_;
-};
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║            S4: 占位等待 — 雷达间隙计数                         ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-// 等待目标车厢间隙 → 与 LockTargetGap 合并
-// 从 cips_task_array[task_round] 获取 train_id 作为 target_gap_id
-// detect_id == target_gap_id → SUCCESS, 否则 RUNNING
-// ★ ActionNodeBase: tick() 直接调用, 不用 onStart/onRunning (StatefulActionNode 生命周期失败)
-class WaitForTargetGap : public BT::StatefulActionNode
-{
-public:
-  WaitForTargetGap(const std::string& n, const BT::NodeConfig& c);
-  BT::NodeStatus onStart() override;
-  BT::NodeStatus onRunning() override;
-  void onHalted() override;
-  static BT::PortsList providedPorts()
-  { return { BT::InputPort<int>("timeout", 0, "超时ms") }; }
-  // static BT::PortsList providedPorts()
-  // { return {
-  //     BT::OutputPort<int>("gap_id", "{target_gap_id}", "锁定间隙ID(=train_id)")
-  // };}
-private:
-
+  double tolerance_ = 0.05;
+  double timeout_ = -1.0;
+  std::string position_type_ = "uncouple";
+  rclcpp::Time start_time_;
 };
 
 // ── 任务信息提取: cips_task_array[task_round] → 黑板各变量 ──
@@ -261,21 +275,6 @@ public:
   GenerateInterceptTrajectory(const std::string& n, const BT::NodeConfig& c) : SyncActionNode(n,c) {}
   BT::NodeStatus tick() override;
   static BT::PortsList providedPorts() { return {}; }
-};
-
-class MPCTrackApproach : public BT::StatefulActionNode
-{
-public:
-  MPCTrackApproach(const std::string& n, const BT::NodeConfig& c);
-  BT::NodeStatus onStart() override;
-  BT::NodeStatus onRunning() override;
-  void onHalted() override;
-  static BT::PortsList providedPorts()
-  { return { BT::InputPort<double>("timeout", 30.0, "超时(秒)") }; }
-private:
-  rclcpp::Time start_time_;
-  double timeout_ = 30.0;
-  int consecutive_converged_ = 0;
 };
 
 class IsTrackingErrorWithin : public BT::SyncActionNode
@@ -352,15 +351,6 @@ public:
 // ║            S8: 微减速贴附                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-class ApplyMicroDeceleration : public BT::SyncActionNode
-{
-public:
-  ApplyMicroDeceleration(const std::string& n, const BT::NodeConfig& c) : SyncActionNode(n,c) {}
-  BT::NodeStatus tick() override;
-  static BT::PortsList providedPorts()
-  { return { BT::InputPort<double>("decel_rate", 0.05, "减速率 m/s^2") }; }
-};
-
 class CheckAttachmentForce : public BT::SyncActionNode
 {
 public:
@@ -373,14 +363,6 @@ public:
 // ╔══════════════════════════════════════════════════════════════╗
 // ║            S9: 摘钩作业                                        ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-class SwitchToNeutralMode : public BT::SyncActionNode
-{
-public:
-  SwitchToNeutralMode(const std::string& n, const BT::NodeConfig& c) : SyncActionNode(n,c) {}
-  BT::NodeStatus tick() override;
-  static BT::PortsList providedPorts() { return {}; }
-};
 
 // ★ 直接发布到 /arm_cmd, 不经过黑板桥接 (避免锁竞争)
 class SendMechanicalArmCommand : public BT::SyncActionNode
@@ -571,10 +553,10 @@ public:
       BT::InputPort<int>("gear", 1, "档位 1=P,2=R,3=N,4=D"),
       BT::InputPort<int>("ctrl_mode", 0, "0=刹车 1=跟车 2=微减速 3=恢复 4=减速停车 10=定速到点"),
       BT::InputPort<double>("position", 0.7, "相对目标距离"),
-      BT::InputPort<double>("max_forward_vel", 2.0, "最大前进速度 m/s"),
-      BT::InputPort<double>("max_backward_vel", 0.5, "最大后退速度 m/s"),
-      BT::InputPort<double>("max_acc", 0.5, "最大加速度 m/s^2"),
-      BT::InputPort<double>("max_dec", 1.0, "最大减速度 m/s^2"),
+      BT::InputPort<double>("max_forward_vel", "最大前进速度 m/s (正值, 缺省取黑板 speed_max_forward_vel)"),
+      BT::InputPort<double>("max_backward_vel", "最大后退速度 m/s (负值, 缺省取黑板 speed_max_backward_vel)"),
+      BT::InputPort<double>("max_acc", "最大加速度 m/s^2 (正值, 缺省取黑板 speed_max_acc)"),
+      BT::InputPort<double>("max_dec", "最大减速度 m/s^2 (负值, 缺省取黑板 speed_max_dec)"),
   };}
 private:
   rclcpp::Publisher<data_interfaces::msg::SpeedCommand>::SharedPtr pub_;
@@ -598,22 +580,6 @@ private:
   int command_ = 2;
   double timeout_ = 10.0;
   rclcpp::Time start_time_;
-};
-
-class ApplyParkingBrake : public BT::SyncActionNode
-{
-public:
-  ApplyParkingBrake(const std::string& n, const BT::NodeConfig& c) : SyncActionNode(n,c) {}
-  BT::NodeStatus tick() override;
-  static BT::PortsList providedPorts() { return {}; }
-};
-
-class ReleaseParkingBrake : public BT::SyncActionNode
-{
-public:
-  ReleaseParkingBrake(const std::string& n, const BT::NodeConfig& c) : SyncActionNode(n,c) {}
-  BT::NodeStatus tick() override;
-  static BT::PortsList providedPorts() { return {}; }
 };
 
 class SendArmCommand : public BT::SyncActionNode
@@ -690,25 +656,6 @@ public:
   BT::NodeStatus tick() override;
   static BT::PortsList providedPorts()
   { return { BT::InputPort<int>("target_gap_id", 0, "目标间隙编号") }; }
-};
-
-class NavigateToStaticTarget : public BT::StatefulActionNode
-{
-public:
-  NavigateToStaticTarget(const std::string& n, const BT::NodeConfig& c);
-  BT::NodeStatus onStart() override;
-  BT::NodeStatus onRunning() override;
-  void onHalted() override;
-  static BT::PortsList providedPorts()
-  { return {
-      BT::InputPort<double>("speed", 1.0, "行进速度 m/s"),
-      BT::InputPort<double>("timeout", 30.0, "超时(秒)")
-  };}
-private:
-  double speed_ = 1.0;
-  double timeout_ = 30.0;
-  rclcpp::Time start_time_;
-  int consecutive_converged_ = 0;
 };
 
 class IsAtTargetPose : public BT::SyncActionNode

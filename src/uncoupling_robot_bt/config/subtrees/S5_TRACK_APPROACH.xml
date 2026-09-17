@@ -1,0 +1,23 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="track_approach">
+      <Action ID="GenerateInterceptTrajectory"/>
+      <Action ID="SetMPCWeights" speed_weight="{w_v}" position_weight="{w_x}"/>
+      <Fallback name="track_with_guard">
+        <Sequence name="track_safety_checks">
+          <Condition ID="IsTargetInRange"/>
+          <Inverter>
+            <Condition ID="IsCollisionRisk"/>
+          </Inverter>
+        </Sequence>
+        <Action ID="MPCTrackApproach"/>
+      </Fallback>
+      <Condition ID="IsTrackingErrorWithin" tolerance="{epsilon}"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S6: 锁定相对静止 (动态模式)
+       ================================================================ -->
+</root>

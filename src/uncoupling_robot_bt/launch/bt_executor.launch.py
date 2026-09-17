@@ -15,7 +15,7 @@
   ros2 launch uncoupling_robot_bt bt_executor.launch.py enable_groot:=false
 
 参数说明:
-  bt_xml_path   - 行为树 XML 文件路径 (默认: config/uncoupling_robot_bt.xml)
+  bt_xml_path   - 行为树 XML 文件路径 (默认: config/uncoupling_robot_bt_dual_mode.xml)
   tick_rate     - tick 频率 Hz (默认: 50)
   step_mode     - 单步调试模式 (默认: false)
   groot_port    - Groot2 ZMQ 端口 (默认: 1667)
@@ -39,7 +39,7 @@ def generate_launch_description():
 
     declare_bt_xml_path = DeclareLaunchArgument(
         'bt_xml_path',
-        default_value='config/uncoupling_robot_bt.xml',
+        default_value='config/uncoupling_robot_bt_dual_mode.xml',
         description='行为树 XML 文件路径')
 
     declare_tick_rate = DeclareLaunchArgument(
@@ -62,24 +62,6 @@ def generate_launch_description():
         default_value='true',
         description='启用 Groot2 连接')
 
-    # ── MPC Controller Node ────────────────────────────────────
-    mpc_controller = Node(
-        package='uncoupling_robot_bt',
-        executable='mpc_controller_node',
-        name='mpc_controller_node',
-        output='screen',
-        parameters=[{
-            'max_velocity': 1.0,
-            'min_velocity': 0.0,
-            'max_acceleration': 1.0,
-            'position_weight': 10.0,
-            'velocity_weight': 1.0,
-            'convergence_threshold': 0.05,
-            'control_rate': 50.0,
-            'target_gap_id': 3,
-        }],
-    )
-
     # ── BT Executor Node ──────────────────────────────────────
     bt_executor = Node(
         package='uncoupling_robot_bt',
@@ -92,6 +74,7 @@ def generate_launch_description():
             'step_mode': step_mode,
             'groot_port': groot_port,
             'enable_groot': enable_groot,
+            'hook_positions_csv': 'config/hook_positions.csv',
         }],
         # 模拟时钟 (rosbag 回放时使用)
         # use_sim_time=True,
@@ -103,6 +86,5 @@ def generate_launch_description():
         declare_step_mode,
         declare_groot_port,
         declare_enable_groot,
-        mpc_controller,
         bt_executor,
     ])

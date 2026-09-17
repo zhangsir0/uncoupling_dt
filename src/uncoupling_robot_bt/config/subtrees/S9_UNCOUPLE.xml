@@ -1,0 +1,22 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="uncouple">
+      <Action ID="SendMechanicalArmCommand" command="START_WORK"/>
+      <Action ID="SwitchToNeutralMode"/>
+      <Action ID="ResetTargetSpeed"/>
+      <RetryUntilSuccessful num_attempts="-1">
+        <Sequence>
+          <Condition ID="CheckMechanicalArm" command="ISOK"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+      <Action ID="SendCoSpeedArmCommand" command="DEMAGNETIZE"/>
+      <Action ID="SendMechanicalArmCommand" command="RESET"/>
+      <Action ID="RetractCoSpeedArm"/>
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S11: 共速臂复位 + 任务分发 (动态模式)
+       ================================================================ -->
+</root>

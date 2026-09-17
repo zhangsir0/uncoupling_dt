@@ -1,0 +1,36 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="static_uncouple">
+
+      <!-- 1. 向 arm (机械臂) 发送开始工作信号: 唤醒进入就绪状态 -->
+      <Action ID="SendMechanicalArmCommand" command="START_WORK"/>
+
+      <!-- 2. 提钩作业并等待完成 -->
+      <RetryUntilSuccessful num_attempts="-1">
+        <Sequence>
+          <Condition ID="CheckMechanicalArm" command="ISOK"/>
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- 3. 作业完毕: 提钩臂收回
+             注意: 无 DEMAGNETIZE → 静态模式不使用共速臂磁吸
+                   无 RetractCoSpeedArm → 静态模式不控制共速臂 -->
+      <Action ID="SendMechanicalArmCommand" command="RESET"/>
+
+    </Sequence>
+  </BehaviorTree>
+
+
+  <!-- ================================================================
+       S11_STATIC_RESET: 任务计数与循环 (静态模式)
+
+       与动态 S11_ARM_RESET 的区别:
+         - 无 SendCoSpeedArmCommand(RESET)  — 不控制共速臂
+         - 无 CheckCoSpeedArm(RESET) 等待   — 不控制共速臂
+         - 无 ResetTargetSpeed              — 无速度跟踪
+
+       流程:
+         1. remaining_tasks -= 1  — 递减任务计数
+         2. CheckRemainingTasks   — remaining>0→循环回S3, remaining==0→退出至S12
+       ================================================================ -->
+</root>

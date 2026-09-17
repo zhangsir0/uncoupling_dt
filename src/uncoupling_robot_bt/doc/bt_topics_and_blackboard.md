@@ -170,15 +170,14 @@ ros2 topic echo /global/common_alarm
 ros2 topic echo /speed_command
 
 ros2 topic pub --once /speed_command data_interfaces/msg/SpeedCommand \
-  '{target_gare: 4, ctrl_mode: 1, target_id: 1, coupling_count: 1, position: 0.6, max_forward_vel: 2.0, max_backward_vel: 1.0, max_acc: 0.5, max_dec: 1.0}'
+  '{target_gare: 4, ctrl_mode: 12, target_id: 1, coupling_count: 1, position: 0.7, max_forward_vel: 2.0, max_backward_vel: 1.0, max_acc: 0.5, max_dec: 1.0}'
 ```
+
 ros2 topic pub --once /speed_command data_interfaces/msg/SpeedCommand \
-  '{target_gare: 4, ctrl_mode: 2, target_id: 1, coupling_count: 1, position: 0.95, max_forward_vel: 2.0, max_backward_vel: 1.0, max_acc: 0.5, max_dec: 1.0}'
+  '{target_gare: 4, ctrl_mode: 2, target_id: 1, coupling_count: 1, position: 1.0, max_forward_vel: 2.0, max_backward_vel: 1.0, max_acc: 0.5, max_dec: 1.0}'
 ```
 
 ros2 bag record /arbitration_state  /auto_spd_ctrl_cmd  /ctrl_hmi  /ctrl_mag_steer /ctrl_speed /detect_result  /speed_command /ctrl_speed /speed_state /tf  /tf_static /lidar_merged/points  -o ziyun_speed_0806_i_4
-
-ros2 bag record /arbitration_state  /arm_cmd /arm_status  /auto_spd_ctrl_cmd /chassis_info_fb  /cips/hook_task_array /cips_status  /co_arm_cmd  /co_arm_status  /ctrl_speed /detect_result  /debug/processed_points /speed_command  /speed_state -o ziyun_command_info_
 
 
 ros2 run target_recognition_node target_recognition_node_exe --ros-args -p debug_mode:=true
@@ -393,7 +392,16 @@ ros2 topic echo /bt_hmi_state
 # 1. 注入 CIPS 任务
 ros2 topic pub --once /cips/hook_task_array data_interfaces/msg/HookTaskArray \
   '{header: {stamp: {sec: 0, nanosec: 0}, frame_id: "cips"}, total_hook_num: 1, hook_tasks: [
-    {train_id: 1, train_type_code: 1, coupling_count: 0, air_pipe_off: false, carriage_brake: false, train_number_str: "C1", hook_lever_type: false}
+    {train_id: 1, train_type_code: 4, coupling_count: 1, air_pipe_off: false, carriage_brake: false, train_number_str: "C1", hook_lever_type: false}
+  ]}'
+
+ros2 topic pub --once /cips/hook_task_array data_interfaces/msg/HookTaskArray \
+  '{header: {stamp: {sec: 0, nanosec: 0}, frame_id: "cips"}, total_hook_num: 5, hook_tasks: [
+    {train_id: 1, train_type_code: 1, coupling_count: 1, air_pipe_off: false, carriage_brake: false, train_number_str: "C70", hook_lever_type: false},
+    {train_id: 3, train_type_code: 2, coupling_count: 2, air_pipe_off: true, carriage_brake: false, train_number_str: "C64", hook_lever_type: true},
+    {train_id: 5, train_type_code: 3, coupling_count: 2, air_pipe_off: false, carriage_brake: true, train_number_str: "P70ak", hook_lever_type: false},
+    {train_id: 7, train_type_code: 1, coupling_count: 2, air_pipe_off: false, carriage_brake: false, train_number_str: "C70", hook_lever_type: false},
+    {train_id: 9, train_type_code: 2, coupling_count: 2, air_pipe_off: true, carriage_brake: false, train_number_str: "C64", hook_lever_type: true}
   ]}'
 
 # 2. 触发任务开始
@@ -407,7 +415,7 @@ ros2 topic pub --once /arm_status std_msgs/msg/Int32MultiArray '{data: [40001, 2
 
 # 5. 模拟检测到目标车厢
 ros2 topic pub --once /detect_result data_interfaces/msg/DetectResult \
-  '{current_id: 0, current_distance: 1.25, relative_velocity: 0.5}'
+  '{current_id: 1, current_distance: 1.25, relative_velocity: 0.5}'
 
 # 6. 模拟速度跟踪完成
 ros2 topic pub --once /speed_state std_msgs/msg/UInt8 '{data: 2}'
